@@ -1,5 +1,6 @@
 from django.shortcuts import render
-
+from django.shortcuts import redirect, render
+from .forms import UserRegistrationForm
 
 def user_list(request):
     return render(request, 'users/participants.html')
@@ -12,4 +13,14 @@ def login_view(request):
 
 
 def register(request):
-    return render(request, 'users/register.html')
+    form = UserRegistrationForm(request.POST or None)
+
+    if request.method == 'POST' and form.is_valid():
+        form.save()
+        return redirect('users:login')
+
+    return render(
+        request,
+        'users/register.html',
+        {'form': form},
+    )
