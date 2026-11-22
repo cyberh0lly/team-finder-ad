@@ -1,6 +1,8 @@
 from django.contrib.auth import login as auth_login
 from django.contrib.auth import logout as auth_logout
+from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.forms import PasswordChangeForm
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
@@ -32,6 +34,19 @@ def edit_profile(request):
         form.save()
         return redirect('users:user_detail', user_id=request.user.id)
     return render(request, 'users/edit_profile.html', {'form': form})
+
+
+@login_required(login_url='users:login')
+def change_password(request):
+    form = PasswordChangeForm(
+        user=request.user,
+        data=request.POST if request.method == 'POST' else None,
+    )
+    if request.method == 'POST' and form.is_valid():
+        user = form.save()
+        update_session_auth_hash(request, user)
+        return redirect('users:user_detail', user_id=user.id)
+    return render(request, 'users/change_password.html', {'form': form})
 
 
 def login_view(request):

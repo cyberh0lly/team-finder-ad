@@ -2,8 +2,9 @@ from io import BytesIO
 from tempfile import TemporaryDirectory
 
 from PIL import Image
+from django.contrib.auth.forms import PasswordChangeForm
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from .forms import UserProfileForm
@@ -249,3 +250,104 @@ class UserProfileEditTests(TestCase):
         self.assertIn('avatar', response.context['form'].errors)
         self.user.refresh_from_db()
         self.assertEqual(self.user.avatar.name, 'avatars/old.png')
+
+
+class ChangePasswordTests(TestCase):
+    old_password = 'Old-TeamFinder-42!'
+    new_password = 'New-TeamFinder-73!'
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            email='password@example.com', password=cls.old_password,
+            name='Анна', surname='Иванова', avatar='avatars/anna.png',
+        )
+        cls.url = reverse('users:change_password')
+
+    def password_data(self, **changes):
+        data = {
+            'old_password': self.old_password,
+            'new_password1': self.new_password,
+            'new_password2': self.new_password,
+        }
+        data.update(changes)
+        return data
+
+    def test_guest_is_redirected_to_login(self):
+        for method in (self.client.get, self.client.post):
+            with self.subTest(method=method.__name__):
+                response = method(self.url)
+                self.assertRedirects(
+                    response, f'{reverse("users:login")}?next={self.url}',
+                )
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(self.old_password))
+
+    def test_authenticated_get_shows_standard_form(self):
+        self.client.force_login(self.user)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'users/change_password.html')
+        form = response.context['form']
+        self.assertIsInstance(form, PasswordChangeForm)
+        self.assertFalse(form.is_bound)
+        self.assertEqual(
+            tuple(form.fields),
+            ('old_password', 'new_password1', 'new_password2'),
+        )
+        for field in form.fields:
+            self.assertContains(response, f'name="{field}"')
+        self.assertContains(response, 'name="csrfmiddlewaretoken"')
+        self.assertContains(response, 'Сохранить пароль')
+
+    def test_invalid_passwords_show_errors_without_saving(self):
+        self.client.force_login(self.user)
+        for changes, field, code in (
+            ({'old_password': 'wrong'}, 'old_password', 'password_incorrect'),
+            ({'new_password2': 'different'}, 'new_password2', 'password_mismatch'),
+        ):
+            with self.subTest(field=field):
+                response = self.client.post(self.url, self.password_data(**changes))
+                self.assertEqual(response.status_code, 200)
+                form = response.context['form']
+                self.assertEqual(form.errors.as_data()[field][0].code, code)
+                self.assertContains(response, form.errors[field][0])
+                self.user.refresh_from_db()
+                self.assertTrue(self.user.check_password(self.old_password))
+
+    @override_settings(AUTH_PASSWORD_VALIDATORS=[{
+        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        'OPTIONS': {'min_length': 12},
+    }])
+    def test_configured_password_validator_is_used(self):
+        self.client.force_login(self.user)
+        response = self.client.post(self.url, self.password_data(
+            new_password1='Short1!', new_password2='Short1!',
+        ))
+        self.assertEqual(response.status_code, 200)
+        form = response.context['form']
+        self.assertEqual(
+            form.errors.as_data()['new_password2'][0].code, 'password_too_short',
+        )
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(self.old_password))
+
+    def test_password_changes_and_session_stays_authenticated(self):
+        self.client.force_login(self.user)
+        response = self.client.post(self.url, self.password_data())
+        self.assertRedirects(
+            response, reverse('users:user_detail', args=[self.user.pk]),
+        )
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(self.new_password))
+        self.assertFalse(self.user.check_password(self.old_password))
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.wsgi_request.user.pk, self.user.pk)
+        self.client.logout()
+        self.assertFalse(self.client.login(
+            email=self.user.email, password=self.old_password,
+        ))
+        self.assertTrue(self.client.login(
+            email=self.user.email, password=self.new_password,
+        ))
