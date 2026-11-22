@@ -1,13 +1,17 @@
+import json
+
+from django import forms
 from django.contrib.auth import login as auth_login
 from django.contrib.auth import logout as auth_logout
 from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 
 from .forms import UserLoginForm, UserProfileForm, UserRegistrationForm
-from .models import User
+from .models import Skill, User
 
 
 def user_list(request):
@@ -21,6 +25,57 @@ def user_detail(request, user_id):
         'users/user-details.html',
         {'user': user},
     )
+
+
+@require_GET
+def skill_list(request):
+    skills = Skill.objects.filter(
+        name__istartswith=request.GET.get('q', '').strip(),
+    ).order_by('name').values('id', 'name')[:10]
+    return JsonResponse(list(skills), safe=False)
+
+
+@require_POST
+def add_skill(request, user_id):
+    user = get_object_or_404(User, pk=user_id)
+    if not request.user.is_authenticated or request.user.pk != user.pk:
+        return JsonResponse({'error': 'Можно менять только свои навыки.'}, status=403)
+    try:
+        data = json.loads(request.body)
+    except (ValueError, UnicodeDecodeError):
+        return JsonResponse({'error': 'Некорректный JSON.'}, status=400)
+    if not isinstance(data, dict):
+        return JsonResponse({'error': 'Ожидается объект с skill_id или name.'}, status=400)
+    created = False
+    if 'skill_id' in data:
+        try:
+            skill_id = forms.IntegerField(
+                min_value=1, max_value=9223372036854775807,
+            ).clean(data['skill_id'])
+        except forms.ValidationError:
+            return JsonResponse({'error': 'Некорректный ID навыка.'}, status=400)
+        skill = get_object_or_404(Skill, pk=skill_id)
+    else:
+        name = data.get('name')
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 124:
+            return JsonResponse(
+                {'error': 'Название навыка должно содержать от 1 до 124 символов.'},
+                status=400,
+            )
+        skill, created = Skill.objects.get_or_create(name=name.strip())
+    added = not user.skills.filter(pk=skill.pk).exists()
+    user.skills.add(skill)
+    return JsonResponse({'skill_id': skill.pk, 'created': created, 'added': added})
+
+
+@require_POST
+def remove_skill(request, user_id, skill_id):
+    user = get_object_or_404(User, pk=user_id)
+    if not request.user.is_authenticated or request.user.pk != user.pk:
+        return JsonResponse({'error': 'Можно менять только свои навыки.'}, status=403)
+    skill = get_object_or_404(user.skills, pk=skill_id)
+    user.skills.remove(skill)
+    return JsonResponse({'removed': True})
 
 
 @login_required(login_url='users:login')

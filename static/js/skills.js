@@ -9,9 +9,9 @@
 
     let skillsUrl, addUrl, removeUrl;
     if (userId) {
-      skillsUrl = `/users/skills/`;
-      addUrl = `/users/${userId}/skills/add/`;
-      removeUrl = (skillId) => `/users/${userId}/skills/${skillId}/remove/`;
+      skillsUrl = container.dataset.skillsUrl;
+      addUrl = container.dataset.addUrl;
+      removeUrl = (skillId) => container.dataset.removeUrl.replace('/0/remove/', `/${skillId}/remove/`);
     } else {
       skillsUrl = `/projects/skills/`;
       addUrl = `/projects/${projectId}/skills/add/`;
@@ -25,8 +25,32 @@
 
     if (!addBtn || !inputWrapper || !input || !suggestions) return;
 
+    const errorBox = document.getElementById("skill-error");
+
+    async function requestJSON(url, options) {
+      if (errorBox) errorBox.hidden = true;
+      try {
+        const res = await fetch(url, options);
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          throw new Error(data?.error || `Не удалось выполнить запрос (${res.status}). Обновите страницу и повторите попытку.`);
+        }
+        if (data === null) throw new Error("Сервер вернул некорректный ответ.");
+        return data;
+      } catch (error) {
+        const message = error instanceof TypeError ? "Не удалось связаться с сервером. Повторите попытку." : error.message;
+        if (errorBox) {
+          errorBox.textContent = message;
+          errorBox.hidden = false;
+        } else {
+          window.alert(message);
+        }
+        return null;
+      }
+    }
+
     addBtn.addEventListener("click", () => {
-      addBtn.classList.add("hidden");
+      addBtn.hidden = true;
       inputWrapper.classList.remove("hidden");
       input.value = "";
       suggestions.innerHTML = "";
@@ -44,9 +68,8 @@
         return;
       }
       t = setTimeout(async () => {
-        const res = await fetch(`${skillsUrl}?q=${encodeURIComponent(q)}`);
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await requestJSON(`${skillsUrl}?q=${encodeURIComponent(q)}`);
+        if (!data || input.value.trim() !== q || inputWrapper.classList.contains("hidden")) return;
 
         suggestions.innerHTML = "";
         data.forEach(s => {
@@ -57,7 +80,7 @@
           suggestions.appendChild(li);
         });
 
-        const exact = data.some(s => s.name.toLowerCase() === q.toLowerCase());
+        const exact = data.some(s => s.name === q);
         if (!exact) {
           const liNew = document.createElement("li");
           liNew.textContent = `Создать «${q}»`;
@@ -77,7 +100,7 @@
       if (li.classList.contains("create-new")) {
         await addSkillByName(li.dataset.name);
       } else if (li.dataset.id) {
-        await addSkillById(li.dataset.id);
+        await addSkillById(li.dataset.id, li.textContent);
       }
       hideInput();
     });
@@ -88,12 +111,7 @@
         const q = input.value.trim();
         if (!q) return;
 
-        const first = suggestions.querySelector("li");
-        if (first && first.dataset.id) {
-          await addSkillById(first.dataset.id);
-        } else {
-          await addSkillByName(q);
-        }
+        await addSkillByName(q);
         hideInput();
       }
       if (e.key === "Escape") {
@@ -104,27 +122,34 @@
     input.addEventListener("blur", () => setTimeout(hideInput, 120));
 
     function hideInput() {
+      clearTimeout(t);
       inputWrapper.classList.add("hidden");
       suggestions.classList.add("hidden");
-      addBtn.classList.remove("hidden");
+      addBtn.hidden = false;
     }
 
     container.addEventListener("click", async (e) => {
       if (e.target.classList.contains("remove-skill-btn")) {
         const chip = e.target.closest(".skill-chip");
         const skillId = chip.dataset.id;
-        const res = await fetch(removeUrl(skillId), {
+        const result = await requestJSON(removeUrl(skillId), {
           method: "POST",
           headers: { "X-CSRFToken": getCookie("csrftoken") }
         });
-        if (res.ok) {
+        if (result) {
           chip.remove();
+          if (!container.querySelector(".skill-chip") && !container.querySelector(".skill-empty")) {
+            const empty = document.createElement("span");
+            empty.className = "skill-empty";
+            empty.textContent = "Навыки не указаны";
+            container.insertBefore(empty, addBtn);
+          }
         }
       }
     });
 
-    async function addSkillById(skillId) {
-      const res = await fetch(addUrl, {
+    async function addSkillById(skillId, name) {
+      const skill = await requestJSON(addUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -132,14 +157,13 @@
         },
         body: JSON.stringify({ skill_id: skillId }),
       });
-      if (res.ok) {
-        const skill = await res.json();
-        appendChip(skill.id, skill.name);
+      if (skill) {
+        appendChip(userId ? skill.skill_id : skill.id, userId ? name : skill.name);
       }
     }
 
     async function addSkillByName(name) {
-      const res = await fetch(addUrl, {
+      const skill = await requestJSON(addUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -147,9 +171,8 @@
         },
         body: JSON.stringify({ name }),
       });
-      if (res.ok) {
-        const skill = await res.json();
-        appendChip(skill.id, skill.name);
+      if (skill) {
+        appendChip(userId ? skill.skill_id : skill.id, userId ? name : skill.name);
       }
     }
 
@@ -159,7 +182,14 @@
       const chip = document.createElement("span");
       chip.className = "skill-chip";
       chip.dataset.id = id;
-      chip.innerHTML = `${name} <button type="button" class="remove-skill-btn" aria-label="Удалить" title="Удалить">×</button>`;
+      chip.textContent = name + " ";
+      const removeButton = document.createElement("button");
+      removeButton.type = "button";
+      removeButton.className = "remove-skill-btn";
+      removeButton.setAttribute("aria-label", "Удалить");
+      removeButton.title = "Удалить";
+      removeButton.textContent = "×";
+      chip.appendChild(removeButton);
 
       container.insertBefore(chip, addBtn);
 

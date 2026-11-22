@@ -6,7 +6,7 @@ from django.contrib.auth.forms import PasswordChangeForm
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.test import TestCase, override_settings
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
 from .forms import UserProfileForm
@@ -62,7 +62,7 @@ class UserDetailTests(TestCase):
         response = self.client.get(self.url)
         self.assertContains(response, 'href="/users/edit-profile/" class="black-button"')
         self.assertContains(response, 'Добавить проект')
-        self.assertNotContains(response, 'id="add-skill-btn"')
+        self.assertContains(response, 'id="add-skill-btn"')
 
     def test_other_user_sees_profile_without_edit_actions(self):
         self.client.force_login(self.other_user)
@@ -392,3 +392,141 @@ class SkillTests(TestCase):
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 Skill.objects.create(name='Python')
+
+
+class SkillManagementTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.owner = User.objects.create_user(
+            email='skill-owner@example.com', name='Анна', surname='Иванова',
+            avatar='avatars/anna.png',
+        )
+        cls.other = User.objects.create_user(
+            email='skill-other@example.com', name='Пётр', surname='Петров',
+            avatar='avatars/petr.png',
+        )
+        cls.skill = Skill.objects.create(name='Python')
+        cls.add_url = reverse('users:add_skill', args=[cls.owner.pk])
+        cls.remove_url = reverse('users:remove_skill', args=[cls.owner.pk, cls.skill.pk])
+        cls.profile_url = reverse('users:user_detail', args=[cls.owner.pk])
+
+    def test_profile_skills_and_owner_controls(self):
+        self.owner.skills.add(self.skill)
+        for viewer in (None, self.other, self.owner):
+            with self.subTest(viewer=viewer):
+                self.client.logout()
+                if viewer:
+                    self.client.force_login(viewer)
+                response = self.client.get(self.profile_url)
+                self.assertContains(response, 'Python')
+                self.assertNotContains(response, 'Навыки не указаны')
+                for control in ('id="add-skill-btn"', 'class="remove-skill-btn"'):
+                    if viewer == self.owner:
+                        self.assertContains(response, control)
+                    else:
+                        self.assertNotContains(response, control)
+
+    def test_autocomplete_prefix_order_and_limit(self):
+        for number in reversed(range(12)):
+            Skill.objects.create(name=f'Py{number:02}')
+        Skill.objects.create(name='NotPython')
+        response = self.client.get(reverse('users:skill_list'), {'q': 'Py'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item['name'] for item in response.json()],
+            [f'Py{number:02}' for number in range(10)],
+        )
+        self.assertEqual(set(response.json()[0]), {'id', 'name'})
+        self.assertEqual(self.client.get(
+            reverse('users:skill_list'), {'q': 'missing'},
+        ).json(), [])
+
+    def test_add_existing_and_repeat(self):
+        self.client.force_login(self.owner)
+        for added in (True, False):
+            response = self.client.post(
+                self.add_url, {'skill_id': self.skill.pk}, content_type='application/json',
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {
+                'skill_id': self.skill.pk, 'created': False, 'added': added,
+            })
+        self.assertEqual(self.owner.skills.count(), 1)
+        self.assertEqual(Skill.objects.count(), 1)
+
+    def test_create_by_name_and_reuse(self):
+        self.client.force_login(self.owner)
+        for created in (True, False):
+            response = self.client.post(
+                self.add_url, {'name': '  Django  '}, content_type='application/json',
+            )
+            self.assertEqual(response.status_code, 200)
+            skill = Skill.objects.get(name='Django')
+            self.assertEqual(response.json(), {
+                'skill_id': skill.pk, 'created': created, 'added': created,
+            })
+        self.assertEqual(self.owner.skills.count(), 1)
+
+    def test_invalid_payload_and_missing_objects(self):
+        self.client.force_login(self.owner)
+        for data in ({}, [], {'name': ''}, {'name': '   '}, {'name': 'x' * 125},
+                     {'name': 3}, {'skill_id': 'bad'}, {'skill_id': None}):
+            with self.subTest(data=data):
+                response = self.client.post(self.add_url, data, content_type='application/json')
+                self.assertEqual(response.status_code, 400)
+        response = self.client.post(self.add_url, '{', content_type='application/json')
+        self.assertEqual(response.status_code, 400)
+        response = self.client.post(
+            self.add_url, {'skill_id': 999999}, content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 404)
+        response = self.client.post(
+            reverse('users:add_skill', args=[999999]),
+            {'name': 'Django'}, content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(self.owner.skills.exists())
+
+    def test_only_owner_can_modify_skills(self):
+        self.owner.skills.add(self.skill)
+        for viewer in (None, self.other):
+            self.client.logout()
+            if viewer:
+                self.client.force_login(viewer)
+            for url in (self.add_url, self.remove_url):
+                with self.subTest(viewer=viewer, url=url):
+                    response = self.client.post(
+                        url, {'name': 'Forbidden'}, content_type='application/json',
+                    )
+                    self.assertEqual(response.status_code, 403)
+        self.assertFalse(Skill.objects.filter(name='Forbidden').exists())
+        self.assertTrue(self.owner.skills.filter(pk=self.skill.pk).exists())
+
+    def test_remove_only_relationship(self):
+        self.owner.skills.add(self.skill)
+        self.other.skills.add(self.skill)
+        self.client.force_login(self.owner)
+        response = self.client.post(self.remove_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.owner.skills.exists())
+        self.assertTrue(Skill.objects.filter(pk=self.skill.pk).exists())
+        self.assertTrue(self.other.skills.filter(pk=self.skill.pk).exists())
+        self.assertEqual(self.client.post(self.remove_url).status_code, 404)
+
+    def test_methods_and_csrf_protection(self):
+        self.client.force_login(self.owner)
+        for url in (self.add_url, self.remove_url):
+            self.assertEqual(self.client.get(url).status_code, 405)
+        self.assertEqual(self.client.post(reverse('users:skill_list')).status_code, 405)
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(self.owner)
+        for url in (self.add_url, self.remove_url):
+            self.assertEqual(client.post(url).status_code, 403)
+        client.get(self.profile_url)
+        token = client.cookies['csrftoken'].value
+        response = client.post(
+            self.add_url, {'skill_id': self.skill.pk}, content_type='application/json',
+            HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(client.post(self.remove_url, HTTP_X_CSRFTOKEN=token).status_code, 200)

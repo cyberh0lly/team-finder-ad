@@ -60,14 +60,32 @@
 
     <h3>Навыки</h3>
     <div class="profile-skills">
-        <div id="skills-container" class="skills-container" data-user-id="{{ user.id }}">
-            {# Модель навыка и связь с пользователем пока не реализованы. #}
+        <div id="skills-container" class="skills-container" data-user-id="{{ user.id }}"
+             data-skills-url="{% url 'users:skill_list' %}"
+             data-add-url="{% url 'users:add_skill' user.id %}"
+             data-remove-url="{% url 'users:remove_skill' user.id 0 %}">
+            {% for skill in user.skills.all %}
+            <span class="skill-chip" data-id="{{ skill.id }}">
+                {{ skill.name }}
+                {% if request.user.id == user.id %}
+                <button type="button" class="remove-skill-btn" aria-label="Удалить" title="Удалить">×</button>
+                {% endif %}
+            </span>
+            {% empty %}
             <span class="skill-empty">Навыки не указаны</span>
+            {% endfor %}
+            {% if request.user.id == user.id %}
+            <button type="button" id="add-skill-btn" class="add-skill-btn">+ Добавить навык</button>
+            {% endif %}
         </div>
+        {% if request.user.id == user.id %}
         <div id="skill-input-wrapper" class="skill-input-wrapper hidden">
-            <input type="text" id="skill-input" placeholder="Введите навык..." autocomplete="off"/>
+            {% csrf_token %}
+            <input type="text" id="skill-input" placeholder="Введите навык..." autocomplete="off" maxlength="124"/>
             <ul id="skill-suggestions" class="skill-suggestions hidden"></ul>
         </div>
+        <p id="skill-error" role="alert" hidden></p>
+        {% endif %}
     </div>
 
     <h3>Проекты</h3>
