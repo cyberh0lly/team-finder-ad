@@ -12,7 +12,7 @@
 <div class="project-container">
     <div class="project-card">
         <div class="project-card-header">
-            <a href="/users/{{ project.owner.id }}">
+            <a href="{% url 'users:user_detail' project.owner.id %}">
                 <div class="project-card-header-left">
                     {% if project.owner.avatar %}
                         <img src="{{ project.owner.avatar.url }}" alt="Аватар автора" class="project-author-avatar">
@@ -30,7 +30,7 @@
                     {% if project.status == "open" %}
                         Открыт
                     {% elif project.status == "closed" %}
-                        Закрыт
+                        Завершён
                     {% else %}
                         {{ project.status }}
                     {% endif %}
@@ -40,7 +40,7 @@
 
         <div class="project-card-body">
                 <h2 class="project-title">{{ project.name }}</h2>
-                <p class="project-description">{{ project.description }}</p>
+                <p class="project-description">{{ project.description|default:"Описание пока не добавлено." }}</p>
 
                 {% if project.github_url %}
                 <p class="project-link">
@@ -52,27 +52,22 @@
         <div class="project-actions">
             <a href="#"
                class="black-button black-button-share share-button"
-               data-url="/projects/{{ project.id }}">
+               data-url="{% url 'projects:project_detail' project.id %}">
                 {% include 'includes/svg/share.html' %}
             </a>
-            {% if user.id == project.owner.id %}
-                <a href="/projects/{{ project.id }}/edit" class="black-button">
+            {% if request.user.is_authenticated and request.user == project.owner %}
+                <button type="button" class="black-button" disabled title="Редактирование будет доступно позже">
                     {% include 'includes/svg/pen.html' %}
                     Редактировать
-                </a>
+                </button>
                 {% if project.status == "open" %}
-                    <button class="black-button" id="complete-project-btn" data-id="{{ project.id }}">
+                    <button type="button" class="black-button" disabled title="Завершение проекта будет доступно позже">
                         Завершить проект
                     </button>
                 {% endif %}
             {% else %}
-                {% if user.is_authenticated %}
-                    <button id="participate-btn" class="black-button"
-                            data-project="{{ project.id }}"
-                            data-user-id="{{ request.user.id }}"
-                            data-user-name="{{ request.user.name }} {{ request.user.surname }}"
-                            data-user-avatar="{% if request.user.avatar %}{{ request.user.avatar.url }}{% else %}{% static 'images/default-avatar.png' %}{% endif %}"
-                    >
+                {% if request.user.is_authenticated %}
+                    <button type="button" class="black-button" disabled title="Управление участием будет доступно позже">
                         {% if request.user in project.participants.all %}
                             Отказаться от участия
                         {% else %}
@@ -89,7 +84,7 @@
     <h3>Участники проекта (<span id="participants-count" style="display:inline">{{ project.participants.all|length }}</span>)</h3>
     <div id="participants-list" class="participants-list">
         {% for member in project.participants.all %}
-        <a href="/users/{{ member.id }}" id="participant-{{ member.id }}">
+        <a href="{% url 'users:user_detail' member.id %}" id="participant-{{ member.id }}">
             <div class="participant-item">
                 {% if member.avatar %}
                     <img src="{{ member.avatar.url }}" alt="Аватар" class="participant-avatar">
@@ -105,7 +100,7 @@
             </div>
         </a>
         {% empty %}
-        <p id="no-participants">Пока нет участников</p>
+        <p id="no-participants">У проекта пока нет участников</p>
         {% endfor %}
         </div>
     </div>

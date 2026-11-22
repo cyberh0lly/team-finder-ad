@@ -158,3 +158,105 @@ class ProjectListTests(TestCase):
 
     def test_home_redirects_to_project_list(self):
         self.assertRedirects(self.client.get(reverse('home')), self.url)
+
+
+class ProjectDetailTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        User = get_user_model()
+        cls.owner = User.objects.create_user(
+            email='detail-owner@example.com', name='Анна', surname='Иванова',
+            avatar='avatars/owner.png',
+        )
+        cls.member = User.objects.create_user(
+            email='detail-member@example.com', name='Пётр', surname='Петров',
+            avatar='avatars/member.png',
+        )
+        cls.visitor = User.objects.create_user(
+            email='detail-visitor@example.com', name='Мария', surname='Смирнова',
+            avatar='avatars/visitor.png',
+        )
+        cls.project = Project.objects.create(
+            name='Учебный проект', description='Собираем команду', owner=cls.owner,
+            github_url='https://github.com/example/teamfinder',
+        )
+        cls.project.participants.add(cls.member)
+        cls.url = reverse('projects:project_detail', args=[cls.project.pk])
+
+    def test_guest_sees_project_owner_and_participants(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'projects/project-details.html')
+        self.assertEqual(response.context['project'], self.project)
+        for value in (
+            self.project.name, self.project.description, self.project.github_url,
+            'Открыт', 'Анна Иванова', 'Пётр Петров',
+            self.owner.avatar.url, self.member.avatar.url,
+            self.project.created_at.strftime('%d.%m.%Y'),
+            f'href="{reverse("users:user_detail", args=[self.owner.pk])}"',
+            f'href="{reverse("users:user_detail", args=[self.member.pk])}"',
+        ):
+            with self.subTest(value=value):
+                self.assertContains(response, value)
+        for label in ('Завершить проект', 'Участвовать', 'Отказаться от участия',
+                      'Редактирование будет доступно позже'):
+            self.assertNotContains(response, label)
+
+    def test_missing_project_returns_404(self):
+        response = self.client.get(reverse('projects:project_detail', args=[999999]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_owner_controls_are_visible_but_disabled(self):
+        self.client.force_login(self.owner)
+        response = self.client.get(self.url)
+        self.assertContains(response, 'disabled title="Редактирование будет доступно позже"')
+        self.assertContains(response, 'disabled title="Завершение проекта будет доступно позже"')
+        self.assertContains(response, 'Завершить проект')
+        self.assertNotContains(response, 'Участвовать')
+        self.assertNotContains(response, 'id="complete-project-btn"')
+
+    def test_non_owner_and_member_controls(self):
+        for viewer, expected, absent in (
+            (self.visitor, 'Участвовать', 'Отказаться от участия'),
+            (self.member, 'Отказаться от участия', 'Участвовать'),
+        ):
+            with self.subTest(viewer=viewer.email):
+                self.client.force_login(viewer)
+                response = self.client.get(self.url)
+                self.assertContains(response, expected)
+                self.assertNotContains(response, absent)
+                self.assertContains(response, 'disabled title="Управление участием будет доступно позже"')
+                self.assertNotContains(response, 'Завершить проект')
+                self.assertNotContains(response, 'Редактирование будет доступно позже')
+                self.assertNotContains(response, 'id="participate-btn"')
+
+    def test_closed_project_has_no_complete_button(self):
+        self.project.status = 'closed'
+        self.project.save()
+        self.client.force_login(self.owner)
+        response = self.client.get(self.url)
+        self.assertContains(response, 'Завершён')
+        self.assertNotContains(response, 'Завершить проект')
+
+    def test_empty_optional_fields_and_participants(self):
+        self.project.participants.clear()
+        self.project.description = ''
+        self.project.github_url = ''
+        self.project.save()
+        get_user_model().objects.filter(pk=self.owner.pk).update(avatar='')
+        response = self.client.get(self.url)
+        self.assertContains(response, 'У проекта пока нет участников')
+        self.assertContains(response, 'Описание пока не добавлено.')
+        self.assertContains(response, 'images/default-avatar.png')
+        self.assertNotContains(response, 'Репозиторий на GitHub')
+
+    def test_get_does_not_change_project_or_membership(self):
+        before = Project.objects.values().get(pk=self.project.pk)
+        for viewer in (None, self.owner, self.member, self.visitor):
+            self.client.logout()
+            if viewer:
+                self.client.force_login(viewer)
+            response = self.client.get(self.url)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(Project.objects.values().get(pk=self.project.pk), before)
+            self.assertCountEqual(self.project.participants.all(), [self.member])

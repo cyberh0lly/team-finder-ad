@@ -1,5 +1,5 @@
 from django.core.paginator import Paginator
-from django.shortcuts import render
+from django.shortcuts import get_object_or_404, render
 
 from .models import Project
 
@@ -17,4 +17,8 @@ def project_list(request):
 
 
 def project_detail(request, project_id):
-    return render(request, 'projects/project-details.html')
+    project = get_object_or_404(
+        Project.objects.select_related('owner').prefetch_related('participants'),
+        pk=project_id,
+    )
+    return render(request, 'projects/project-details.html', {'project': project})
