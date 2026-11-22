@@ -1,6 +1,12 @@
+from io import BytesIO
+from tempfile import TemporaryDirectory
+
+from PIL import Image
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.urls import reverse
 
+from .forms import UserProfileForm
 from .models import User
 
 
@@ -36,7 +42,7 @@ class UserDetailTests(TestCase):
         ):
             with self.subTest(value=value):
                 self.assertContains(response, value)
-        self.assertNotContains(response, 'href="/users/edit-profile"')
+        self.assertNotContains(response, 'href="/users/edit-profile/" class="black-button"')
         self.assertNotContains(response, 'Добавить проект')
         self.assertContains(response, '<h3>Навыки</h3>', html=True)
         self.assertContains(response, 'Навыки не указаны')
@@ -51,7 +57,7 @@ class UserDetailTests(TestCase):
     def test_owner_sees_profile_actions(self):
         self.client.force_login(self.user)
         response = self.client.get(self.url)
-        self.assertContains(response, 'href="/users/edit-profile"')
+        self.assertContains(response, 'href="/users/edit-profile/" class="black-button"')
         self.assertContains(response, 'Добавить проект')
         self.assertNotContains(response, 'id="add-skill-btn"')
 
@@ -69,7 +75,7 @@ class UserDetailTests(TestCase):
             '<span class="username">Пётр Петров</span>',
             html=True,
         )
-        self.assertNotContains(response, 'href="/users/edit-profile"')
+        self.assertNotContains(response, 'href="/users/edit-profile/" class="black-button"')
         self.assertNotContains(response, 'Добавить проект')
 
     def test_empty_optional_fields(self):
@@ -82,3 +88,164 @@ class UserDetailTests(TestCase):
         self.assertContains(response, 'Описание профиля пока не добавлено.')
         self.assertNotContains(response, self.user.phone)
         self.assertNotContains(response, self.user.github_url)
+
+
+class UserProfileEditTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            email='owner@example.com', name='Анна', surname='Иванова',
+            avatar='avatars/old.png', phone='+79991234567',
+        )
+        cls.other = User.objects.create_user(
+            email='other@example.com', name='Пётр', surname='Петров',
+            avatar='avatars/other.png', phone='89997654321',
+        )
+        cls.url = reverse('users:edit_profile')
+
+    def profile_data(self, **changes):
+        data = {
+            'name': 'Анна', 'surname': 'Смирнова', 'about': 'Изучаю Django',
+            'phone': '89991234567', 'github_url': 'https://github.com/anna',
+        }
+        data.update(changes)
+        return data
+
+    def test_guest_cannot_get_or_submit_form(self):
+        for method in (self.client.get, self.client.post):
+            with self.subTest(method=method.__name__):
+                response = method(self.url)
+                self.assertRedirects(
+                    response, f'{reverse("users:login")}?next={self.url}',
+                )
+
+    def test_get_has_initial_values_and_only_allowed_fields(self):
+        self.client.force_login(self.user)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'users/edit_profile.html')
+        form = response.context['form']
+        self.assertFalse(form.is_bound)
+        self.assertEqual(form.instance, self.user)
+        self.assertEqual(form.initial['phone'], self.user.phone)
+        self.assertEqual(form.initial['name'], self.user.name)
+        self.assertEqual(
+            tuple(form.fields),
+            ('name', 'surname', 'avatar', 'about', 'phone', 'github_url'),
+        )
+        self.assertContains(response, 'enctype="multipart/form-data"')
+
+    def test_post_updates_only_current_user_and_preserves_avatar(self):
+        self.client.force_login(self.user)
+        response = self.client.post(self.url, self.profile_data(
+            id=self.other.pk, email='changed@example.com', is_staff='on',
+            password='new-password',
+        ))
+        self.assertRedirects(
+            response, reverse('users:user_detail', args=[self.user.pk]),
+        )
+        password = self.user.password
+        self.user.refresh_from_db()
+        self.other.refresh_from_db()
+        self.assertEqual(self.user.surname, 'Смирнова')
+        self.assertEqual(self.user.phone, '+79991234567')
+        self.assertEqual(self.user.about, 'Изучаю Django')
+        self.assertEqual(self.user.github_url, 'https://github.com/anna')
+        self.assertEqual(self.user.avatar.name, 'avatars/old.png')
+        self.assertEqual(self.user.email, 'owner@example.com')
+        self.assertEqual(self.user.password, password)
+        self.assertFalse(self.user.is_staff)
+        self.assertEqual(self.other.surname, 'Петров')
+
+    def test_phone_formats_and_duplicates(self):
+        for phone in ('89991234567', '+79991234567', ''):
+            with self.subTest(valid=phone):
+                form = UserProfileForm(
+                    self.profile_data(phone=phone), instance=self.user,
+                )
+                self.assertTrue(form.is_valid(), form.errors)
+                self.assertEqual(
+                    form.cleaned_data['phone'], '+79991234567' if phone else '',
+                )
+        for phone in ('123', '+7999 1234567', '79991234567', '8abcdefghij'):
+            with self.subTest(invalid=phone):
+                form = UserProfileForm(
+                    self.profile_data(phone=phone), instance=self.user,
+                )
+                self.assertFalse(form.is_valid())
+                self.assertIn('phone', form.errors)
+        for stored in ('89997654321', '+79997654321'):
+            User.objects.filter(pk=self.other.pk).update(phone=stored)
+            for phone in ('89997654321', '+79997654321'):
+                with self.subTest(stored=stored, submitted=phone):
+                    form = UserProfileForm(
+                        self.profile_data(phone=phone), instance=self.user,
+                    )
+                    self.assertFalse(form.is_valid())
+                    self.assertIn('уже используется', form.errors['phone'][0])
+
+    def test_github_validation(self):
+        for url in ('', 'https://github.com/anna', 'http://github.com/anna'):
+            with self.subTest(valid=url):
+                form = UserProfileForm(
+                    self.profile_data(github_url=url), instance=self.user,
+                )
+                self.assertTrue(form.is_valid(), form.errors)
+        for url in (
+            'not a url', 'https://example.com',
+            'https://github.com.example.com/anna',
+            'https://github.com@example.com/anna', 'ftp://github.com/anna',
+        ):
+            with self.subTest(invalid=url):
+                form = UserProfileForm(
+                    self.profile_data(github_url=url), instance=self.user,
+                )
+                self.assertFalse(form.is_valid())
+                self.assertIn('github_url', form.errors)
+
+    def test_invalid_post_displays_errors_without_saving(self):
+        self.client.force_login(self.user)
+        for changes, field in (
+            ({'phone': '123'}, 'phone'),
+            ({'phone': '+79997654321'}, 'phone'),
+            ({'github_url': 'https://example.com'}, 'github_url'),
+        ):
+            with self.subTest(field=field, changes=changes):
+                response = self.client.post(self.url, self.profile_data(**changes))
+                self.assertEqual(response.status_code, 200)
+                form = response.context['form']
+                self.assertIn(field, form.errors)
+                self.assertContains(response, form.errors[field][0])
+                self.assertEqual(form['surname'].value(), 'Смирнова')
+                self.user.refresh_from_db()
+                self.assertEqual(self.user.surname, 'Иванова')
+
+    def test_avatar_upload(self):
+        self.client.force_login(self.user)
+        image = BytesIO()
+        Image.new('RGB', (10, 10), 'blue').save(image, format='PNG')
+        upload = SimpleUploadedFile(
+            'new.png', image.getvalue(), content_type='image/png',
+        )
+        with TemporaryDirectory() as media_root:
+            with self.settings(MEDIA_ROOT=media_root):
+                response = self.client.post(
+                    self.url, self.profile_data(avatar=upload),
+                )
+                self.assertRedirects(
+                    response, reverse('users:user_detail', args=[self.user.pk]),
+                )
+                self.user.refresh_from_db()
+                self.assertTrue(self.user.avatar.name.startswith('avatars/new'))
+                self.assertTrue(self.user.avatar.storage.exists(self.user.avatar.name))
+
+    def test_invalid_image_is_rejected(self):
+        self.client.force_login(self.user)
+        upload = SimpleUploadedFile(
+            'fake.png', b'not an image', content_type='image/png',
+        )
+        response = self.client.post(self.url, self.profile_data(avatar=upload))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('avatar', response.context['form'].errors)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.avatar.name, 'avatars/old.png')

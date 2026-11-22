@@ -1,9 +1,10 @@
 from django.contrib.auth import login as auth_login
 from django.contrib.auth import logout as auth_logout
+from django.contrib.auth.decorators import login_required
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
-from .forms import UserLoginForm, UserRegistrationForm
+from .forms import UserLoginForm, UserProfileForm, UserRegistrationForm
 from .models import User
 
 
@@ -18,6 +19,19 @@ def user_detail(request, user_id):
         'users/user-details.html',
         {'user': user},
     )
+
+
+@login_required(login_url='users:login')
+def edit_profile(request):
+    form = UserProfileForm(
+        request.POST if request.method == 'POST' else None,
+        request.FILES if request.method == 'POST' else None,
+        instance=request.user,
+    )
+    if request.method == 'POST' and form.is_valid():
+        form.save()
+        return redirect('users:user_detail', user_id=request.user.id)
+    return render(request, 'users/edit_profile.html', {'form': form})
 
 
 def login_view(request):
