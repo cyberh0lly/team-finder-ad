@@ -1,9 +1,10 @@
 from django.contrib.auth import login as auth_login
-from django.shortcuts import redirect, render
 from django.contrib.auth import logout as auth_logout
+from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
 from .forms import UserLoginForm, UserRegistrationForm
+from .models import User
 
 
 def user_list(request):
@@ -11,7 +12,12 @@ def user_list(request):
 
 
 def user_detail(request, user_id):
-    return render(request, 'users/user-details.html')
+    user = get_object_or_404(User, id=user_id)
+    return render(
+        request,
+        'users/user-details.html',
+        {'user': user},
+    )
 
 
 def login_view(request):
