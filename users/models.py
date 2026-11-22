@@ -32,6 +32,13 @@ class UserManager(BaseUserManager):
         return self.create_user(email, password, **extra_fields)
 
 
+class Skill(models.Model):
+    name = models.CharField(max_length=124, unique=True)
+
+    def __str__(self):
+        return self.name
+
+
 class User(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True)
     name = models.CharField(max_length=124)
@@ -40,6 +47,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     phone = models.CharField(max_length=12, blank=True)
     github_url = models.URLField(blank=True)
     about = models.TextField(max_length=256, blank=True)
+    skills = models.ManyToManyField(Skill, blank=True, related_name='users')
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
 

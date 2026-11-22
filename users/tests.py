@@ -4,11 +4,13 @@ from tempfile import TemporaryDirectory
 from PIL import Image
 from django.contrib.auth.forms import PasswordChangeForm
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from .forms import UserProfileForm
-from .models import User
+from .models import Skill, User
 
 
 class UserDetailTests(TestCase):
@@ -351,3 +353,42 @@ class ChangePasswordTests(TestCase):
         self.assertTrue(self.client.login(
             email=self.user.email, password=self.new_password,
         ))
+
+
+class SkillTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            email='skills@example.com', name='Анна', surname='Иванова',
+            avatar='avatars/anna.png',
+        )
+        cls.other = User.objects.create_user(
+            email='other-skills@example.com', name='Пётр', surname='Петров',
+            avatar='avatars/petr.png',
+        )
+        cls.python = Skill.objects.create(name='Python')
+
+    def test_skill_name_and_validation(self):
+        self.assertEqual(str(self.python), 'Python')
+        Skill(name='A' * 124).full_clean()
+        for name in ('', 'A' * 125):
+            with self.subTest(name=name):
+                with self.assertRaises(ValidationError):
+                    Skill(name=name).full_clean()
+
+    def test_user_can_have_no_skills(self):
+        self.assertFalse(self.user.skills.exists())
+
+    def test_many_to_many_relationship_and_reverse_lookup(self):
+        django = Skill.objects.create(name='Django')
+        self.user.skills.add(self.python, django)
+        self.other.skills.add(self.python)
+        self.assertCountEqual(self.user.skills.all(), [self.python, django])
+        self.assertCountEqual(self.other.skills.all(), [self.python])
+        self.assertCountEqual(self.python.users.all(), [self.user, self.other])
+        self.assertCountEqual(django.users.all(), [self.user])
+
+    def test_exact_duplicate_is_rejected_by_database(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Skill.objects.create(name='Python')
