@@ -18,35 +18,31 @@
     <div class="form-field">
       {{ form.name.label_tag }}
       {{ form.name }}
+      <div class="form-errors">{{ form.name.errors }}</div>
     </div>
 
     <div class="form-field">
       {{ form.description.label_tag }}
       {{ form.description }}
+      <div class="form-errors">{{ form.description.errors }}</div>
     </div>
 
     <div class="form-field">
       {{ form.github_url.label_tag }}
       {{ form.github_url }}
+      <div class="form-errors">{{ form.github_url.errors }}</div>
     </div>
 
     <div class="form-field">
       {{ form.status.label_tag }}
       {{ form.status }}
+      <div class="form-errors">{{ form.status.errors }}</div>
     </div>
 
-    {% if form.errors %}
-    <div class="form-errors">
-      {% for field, errors in form.errors.items %}
-      {% for error in errors %}
-      <p>{{ error }}</p>
-      {% endfor %}
-      {% endfor %}
-    </div>
-    {% endif %}
+    <div class="form-errors">{{ form.non_field_errors }}</div>
 
     <div class="form-actions">
-      <a href="/" class="cancel-button">Отмена</a>
+      <a href="{% url 'projects:project_list' %}" class="cancel-button">Отмена</a>
       <button type="submit" class="save-button">{% if is_edit %}Сохранить{% else %}Опубликовать{% endif %}</button>
     </div>
   </form>

@@ -260,3 +260,112 @@ class ProjectDetailTests(TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(Project.objects.values().get(pk=self.project.pk), before)
             self.assertCountEqual(self.project.participants.all(), [self.member])
+
+
+class ProjectCreationTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = get_user_model().objects.create_user(
+            email='creator@example.com', name='Анна', surname='Иванова',
+            avatar='avatars/anna.png',
+        )
+        cls.other = get_user_model().objects.create_user(
+            email='other-creator@example.com', name='Пётр', surname='Петров',
+            avatar='avatars/petr.png',
+        )
+        cls.url = reverse('projects:create_project')
+
+    def project_data(self, **changes):
+        data = {
+            'name': 'Новый проект', 'description': 'Описание проекта',
+            'github_url': 'https://github.com/example/project', 'status': 'open',
+        }
+        data.update(changes)
+        return data
+
+    def test_guest_cannot_open_or_submit_form(self):
+        self.assertRedirects(
+            self.client.get(self.url), f'{reverse("users:login")}?next={self.url}',
+        )
+        self.assertRedirects(
+            self.client.post(self.url, self.project_data()),
+            f'{reverse("users:login")}?next={self.url}',
+        )
+        self.assertFalse(Project.objects.exists())
+
+    def test_get_shows_empty_form_with_allowed_fields(self):
+        self.client.force_login(self.user)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'projects/create-project.html')
+        self.assertIs(response.context['is_edit'], False)
+        form = response.context['form']
+        self.assertFalse(form.is_bound)
+        self.assertEqual(tuple(form.fields), ('name', 'description', 'github_url', 'status'))
+        self.assertEqual(list(form.fields['status'].choices), [('open', 'Открыт'), ('closed', 'Закрыт')])
+        self.assertContains(response, '<select name="status"')
+        self.assertContains(response, 'Опубликовать')
+        self.assertContains(response, 'name="csrfmiddlewaretoken"')
+        self.assertFalse(Project.objects.exists())
+
+    def test_valid_post_sets_owner_and_participant(self):
+        self.client.force_login(self.user)
+        response = self.client.post(self.url, self.project_data(
+            owner=self.other.pk, participants=[self.other.pk], created_at='2000-01-01',
+        ))
+        self.assertEqual(Project.objects.count(), 1)
+        project = Project.objects.get()
+        self.assertEqual(project.owner, self.user)
+        self.assertCountEqual(project.participants.all(), [self.user])
+        self.assertEqual(project.name, 'Новый проект')
+        self.assertEqual(project.description, 'Описание проекта')
+        self.assertEqual(project.github_url, 'https://github.com/example/project')
+        self.assertEqual(project.status, 'open')
+        self.assertNotEqual(project.created_at.year, 2000)
+        self.assertRedirects(response, reverse('projects:project_detail', args=[project.pk]))
+
+    def test_optional_fields_and_closed_status(self):
+        self.client.force_login(self.user)
+        response = self.client.post(self.url, self.project_data(
+            description='', github_url='', status='closed',
+        ))
+        project = Project.objects.get()
+        self.assertEqual(project.description, '')
+        self.assertEqual(project.github_url, '')
+        self.assertEqual(project.status, 'closed')
+        self.assertRedirects(response, reverse('projects:project_detail', args=[project.pk]))
+
+    def test_invalid_data_displays_errors_and_does_not_create_project(self):
+        self.client.force_login(self.user)
+        for changes, field in (
+            ({'name': ''}, 'name'),
+            ({'name': ' '}, 'name'),
+            ({'name': 'x' * 201}, 'name'),
+            ({'github_url': 'not a url'}, 'github_url'),
+            ({'github_url': 'https://example.com'}, 'github_url'),
+            ({'github_url': 'https://github.com.example.org'}, 'github_url'),
+            ({'github_url': 'https://github.com@example.org'}, 'github_url'),
+            ({'github_url': 'https://docs.github.com'}, 'github_url'),
+            ({'github_url': 'ftp://github.com/example'}, 'github_url'),
+            ({'status': ''}, 'status'),
+            ({'status': 'other'}, 'status'),
+        ):
+            with self.subTest(changes=changes):
+                response = self.client.post(self.url, self.project_data(**changes))
+                self.assertEqual(response.status_code, 200)
+                self.assertTemplateUsed(response, 'projects/create-project.html')
+                form = response.context['form']
+                self.assertIn(field, form.errors)
+                self.assertContains(response, form.errors[field][0])
+                self.assertContains(response, 'Описание проекта')
+                self.assertFalse(Project.objects.exists())
+
+    def test_create_links_use_named_route(self):
+        self.client.force_login(self.user)
+        for url in (
+            reverse('projects:project_list'),
+            reverse('users:user_detail', args=[self.user.pk]),
+        ):
+            response = self.client.get(url)
+            self.assertContains(response, f'href="{self.url}"')
+            self.assertNotContains(response, 'href="/projects/create-project"')

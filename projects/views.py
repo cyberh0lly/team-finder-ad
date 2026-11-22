@@ -1,6 +1,8 @@
+from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
-from django.shortcuts import get_object_or_404, render
+from django.shortcuts import get_object_or_404, redirect, render
 
+from .forms import ProjectForm
 from .models import Project
 
 
@@ -22,3 +24,17 @@ def project_detail(request, project_id):
         pk=project_id,
     )
     return render(request, 'projects/project-details.html', {'project': project})
+
+
+@login_required(login_url='users:login')
+def create_project(request):
+    form = ProjectForm(request.POST if request.method == 'POST' else None)
+    if request.method == 'POST' and form.is_valid():
+        project = form.save(commit=False)
+        project.owner = request.user
+        project.save()
+        project.participants.add(request.user)
+        return redirect('projects:project_detail', project_id=project.pk)
+    return render(
+        request, 'projects/create-project.html', {'form': form, 'is_edit': False},
+    )
