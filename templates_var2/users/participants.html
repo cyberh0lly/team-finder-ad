@@ -21,13 +21,13 @@
         <span class="filter-label">Фильтр по навыкам:</span>
         <div class="filter-chips">
             {% for skill in all_skills %}
-            <a href="?skill={{ skill }}"
-               class="filter-chip {% if active_skill == skill %}active{% endif %}">
-                {{ skill }}
+            <a href="?skill={{ skill.name|urlencode }}"
+               class="filter-chip {% if active_skill == skill.name %}active{% endif %}">
+                {{ skill.name }}
             </a>
             {% endfor %}
             {% if active_skill %}
-            <a href="/users/list" class="filter-reset">Сбросить</a>
+            <a href="{% url 'users:user_list' %}" class="filter-reset">Сбросить</a>
             {% endif %}
         </div>
     </div>
@@ -48,7 +48,7 @@
                 <p class="participant-role">{{ participant.about|truncatechars:80 }}</p>
             </div>
             <div class="participant-card-footer">
-                <a href="/users/{{ participant.id }}" class="white-button">
+                <a href="{% url 'users:user_detail' participant.id %}" class="white-button">
                     {% include 'includes/svg/eye.html' %} Посмотреть контакты
                 </a>
             </div>
@@ -73,7 +73,17 @@
     </div>
     {% endif %}
     {% else %}
-    {% include 'includes/empty-project-card.html' with empty_title="Пока нет участников" empty_message="Попробуйте сбросить фильтр по навыкам" button_link="/users/list" button_text="Сбросить" %}
+    <div class="empty-project-card not-favorite">
+        {% include 'includes/svg/heart.html' %}
+        {% if active_skill %}
+        <h3>Участники с этим навыком не найдены</h3>
+        <p>Попробуйте сбросить фильтр по навыкам</p>
+        <a href="{% url 'users:user_list' %}" class="black-button">Сбросить</a>
+        {% else %}
+        <h3>Пока нет участников</h3>
+        <p>Здесь появятся зарегистрированные пользователи</p>
+        {% endif %}
+    </div>
     {% endif %}
 </div>
 {% endblock %}

@@ -1,4 +1,5 @@
 import json
+from urllib.parse import urlencode
 
 from django import forms
 from django.contrib.auth import login as auth_login
@@ -6,6 +7,7 @@ from django.contrib.auth import logout as auth_logout
 from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
+from django.core.paginator import Paginator
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET, require_POST
@@ -15,7 +17,19 @@ from .models import Skill, User
 
 
 def user_list(request):
-    return render(request, 'users/participants.html')
+    active_skill = request.GET.get('skill', '')
+    participants = User.objects.order_by('id')
+    if active_skill:
+        participants = participants.filter(skills__name=active_skill).distinct()
+    page_obj = Paginator(participants, 12).get_page(request.GET.get('page'))
+    context = {
+        'participants': participants,
+        'all_skills': Skill.objects.order_by('name'),
+        'active_skill': active_skill,
+        'page_obj': page_obj,
+        'query_prefix': urlencode({'skill': active_skill}) + '&' if active_skill else '',
+    }
+    return render(request, 'users/participants.html', context)
 
 
 def user_detail(request, user_id):

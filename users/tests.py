@@ -530,3 +530,102 @@ class SkillManagementTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(client.post(self.remove_url, HTTP_X_CSRFTOKEN=token).status_code, 200)
+
+
+class ParticipantListTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.members = [
+            User.objects.create_user(
+                email=f'participant{number}@example.com',
+                name=f'Участник {number}', surname='Тестовый',
+                avatar=f'avatars/member{number}.png',
+            )
+            for number in range(25)
+        ]
+        cls.python = Skill.objects.create(name='Python')
+        cls.special = Skill.objects.create(name='C++ & веб')
+        cls.unused = Skill.objects.create(name='Django')
+        for member in cls.members[:13]:
+            member.skills.add(cls.python, cls.special)
+        cls.url = reverse('users:user_list')
+
+    def test_guest_sees_ordered_users_and_profile_links(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'users/participants.html')
+        self.assertQuerySetEqual(
+            response.context['participants'], [user.pk for user in self.members],
+            transform=lambda user: user.pk,
+        )
+        self.assertEqual(list(response.context['page_obj']), self.members[:12])
+        self.assertContains(response, 'class="participant-card"', count=12)
+        self.assertContains(response, self.members[0].avatar.url)
+        self.assertContains(response, 'Участник 0 Тестовый')
+        for member in self.members[:12]:
+            self.assertContains(response, f'href="{reverse("users:user_detail", args=[member.pk])}"')
+        self.assertEqual(
+            list(response.context['all_skills']), [self.special, self.unused, self.python],
+        )
+        self.assertNotContains(response, 'class="filter-reset"')
+
+    def test_exact_skill_filter_and_reset(self):
+        response = self.client.get(self.url, {'skill': 'Python'})
+        self.assertEqual(response.context['page_obj'].paginator.count, 13)
+        self.assertQuerySetEqual(
+            response.context['participants'], [user.pk for user in self.members[:13]],
+            transform=lambda user: user.pk,
+        )
+        self.assertContains(
+            response, '<a href="?skill=Python" class="filter-chip active">Python</a>', html=True,
+        )
+        self.assertContains(
+            response, f'<a href="{self.url}" class="filter-reset">Сбросить</a>', html=True,
+        )
+        reset = self.client.get(self.url)
+        self.assertEqual(reset.context['page_obj'].paginator.count, 25)
+
+    def test_unknown_or_partial_skill_has_empty_results(self):
+        for skill in ('Unknown', 'Py', 'python', 'Django'):
+            with self.subTest(skill=skill):
+                response = self.client.get(self.url, {'skill': skill})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(list(response.context['page_obj']), [])
+                self.assertContains(response, 'Участники с этим навыком не найдены')
+
+    def test_pagination_and_invalid_page_numbers(self):
+        for page, expected in (
+            ('1', self.members[:12]), ('2', self.members[12:24]),
+            ('3', self.members[24:]), ('bad', self.members[:12]),
+            ('999', self.members[24:]), ('0', self.members[24:]),
+        ):
+            with self.subTest(page=page):
+                response = self.client.get(self.url, {'page': page})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(list(response.context['page_obj']), expected)
+
+    def test_filtered_pagination_preserves_encoded_skill(self):
+        from urllib.parse import urlencode
+
+        for skill in (self.python, self.special):
+            with self.subTest(skill=skill.name):
+                response = self.client.get(self.url, {'skill': skill.name})
+                prefix = urlencode({'skill': skill.name})
+                self.assertContains(response, f'href="?{prefix}&amp;page=2"')
+                response = self.client.get(self.url, {'skill': skill.name, 'page': 2})
+                self.assertEqual(list(response.context['page_obj']), self.members[12:13])
+                self.assertContains(response, f'href="?{prefix}&amp;page=1"')
+
+    def test_empty_database(self):
+        User.objects.all().delete()
+        Skill.objects.all().delete()
+        response = self.client.get(self.url)
+        self.assertContains(response, 'Пока нет участников')
+        self.assertEqual(list(response.context['page_obj']), [])
+        self.assertNotContains(response, 'class="pagination"')
+
+    def test_empty_optional_profile_fields(self):
+        User.objects.filter(pk=self.members[0].pk).update(avatar='', about='')
+        response = self.client.get(self.url)
+        self.assertContains(response, 'images/default-avatar.png')
+        self.assertContains(response, 'Участник 0 Тестовый')
