@@ -120,7 +120,7 @@ def change_password(request):
 
 def login_view(request):
     form = UserLoginForm(
-        request.POST or None,
+        request.POST if request.method == 'POST' else None,
         request=request,
     )
 
@@ -136,7 +136,7 @@ def login_view(request):
 
 
 def register(request):
-    form = UserRegistrationForm(request.POST or None)
+    form = UserRegistrationForm(request.POST if request.method == 'POST' else None)
 
     if request.method == 'POST' and form.is_valid():
         form.save()

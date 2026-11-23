@@ -629,3 +629,142 @@ class ParticipantListTests(TestCase):
         response = self.client.get(self.url)
         self.assertContains(response, 'images/default-avatar.png')
         self.assertContains(response, 'Участник 0 Тестовый')
+
+
+class UserWorkflowTests(TestCase):
+    def setUp(self):
+        media = TemporaryDirectory()
+        self.addCleanup(media.cleanup)
+        settings_override = self.settings(MEDIA_ROOT=media.name)
+        settings_override.enable()
+        self.addCleanup(settings_override.disable)
+        self.user = User.objects.create_user(
+            email='workflow@example.com', password='Workflow-Secret-42!',
+            name='Анна', surname='Иванова', avatar='avatars/a.png',
+        )
+
+    def test_registration_login_and_profile_edit(self):
+        response = self.client.post(reverse('users:register'), {
+            'email': 'new@example.com', 'name': 'Мария', 'surname': 'Петрова',
+            'password1': 'Registration-Secret-42!', 'password2': 'Registration-Secret-42!',
+            'is_staff': True, 'is_superuser': True,
+        })
+        self.assertRedirects(response, reverse('users:login'))
+        user = User.objects.get(email='new@example.com')
+        self.assertFalse(user.is_staff)
+        self.assertFalse(user.is_superuser)
+        self.assertNotIn('_auth_user_id', self.client.session)
+        self.assertTrue(user.avatar.storage.exists(user.avatar.name))
+        response = self.client.post(reverse('users:login'), {
+            'email': user.email, 'password': 'Registration-Secret-42!',
+        })
+        self.assertRedirects(response, reverse('projects:project_list'))
+        profile_url = reverse('users:user_detail', args=[user.pk])
+        self.assertContains(self.client.get(profile_url), 'Мария Петрова')
+        response = self.client.post(reverse('users:edit_profile'), {
+            'name': 'Мария', 'surname': 'Смирнова', 'about': 'Учусь Django',
+            'phone': '89991234567', 'github_url': 'https://github.com/maria',
+        })
+        self.assertRedirects(response, profile_url)
+        user.refresh_from_db()
+        self.assertEqual(user.phone, '+79991234567')
+        self.assertContains(self.client.get(profile_url), 'Мария Смирнова')
+        self.assertContains(self.client.get(profile_url), 'Учусь Django')
+
+    def test_skill_profile_filter_and_remove_workflow(self):
+        self.client.force_login(self.user)
+        response = self.client.post(reverse('users:add_skill', args=[self.user.pk]),
+                                    {'name': 'WorkflowPython'}, content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        skill_id = response.json()['skill_id']
+        self.assertContains(self.client.get(reverse('users:user_detail', args=[self.user.pk])), 'WorkflowPython')
+        response = self.client.get(reverse('users:user_list'), {'skill': 'WorkflowPython'})
+        self.assertEqual(list(response.context['page_obj']), [self.user])
+        response = self.client.post(reverse('users:remove_skill', args=[self.user.pk, skill_id]))
+        self.assertEqual(response.status_code, 200)
+        response = self.client.get(reverse('users:user_list'), {'skill': 'WorkflowPython'})
+        self.assertEqual(list(response.context['page_obj']), [])
+        self.assertNotContains(self.client.get(reverse('users:user_detail', args=[self.user.pk])), 'WorkflowPython')
+        self.assertTrue(Skill.objects.filter(pk=skill_id).exists())
+
+    def test_empty_auth_posts_show_required_errors(self):
+        for route in ('users:register', 'users:login'):
+            with self.subTest(route=route):
+                response = self.client.post(reverse(route), {})
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.context['form'].is_bound)
+                self.assertIn('email', response.context['form'].errors)
+        self.assertEqual(User.objects.count(), 1)
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+    def test_invalid_login_and_registration_do_not_authenticate(self):
+        response = self.client.post(reverse('users:login'), {
+            'email': self.user.email, 'password': 'wrong',
+        })
+        self.assertTrue(response.context['form'].non_field_errors())
+        response = self.client.post(reverse('users:register'), {
+            'email': self.user.email, 'name': 'Анна', 'surname': 'Иванова',
+            'password1': 'Test-Secret-42!', 'password2': 'Different-Secret-42!',
+        })
+        self.assertIn('email', response.context['form'].errors)
+        self.assertIn('password2', response.context['form'].errors)
+        self.assertEqual(User.objects.count(), 1)
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+    def test_logout_requires_post_and_csrf(self):
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(self.user)
+        url = reverse('users:logout')
+        self.assertEqual(client.get(url).status_code, 405)
+        self.assertEqual(client.post(url).status_code, 403)
+        self.assertEqual(client.session['_auth_user_id'], str(self.user.pk))
+        client.get(reverse('users:user_detail', args=[self.user.pk]))
+        response = client.post(url, HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value)
+        self.assertRedirects(response, reverse('users:login'))
+        self.assertNotIn('_auth_user_id', client.session)
+
+    def test_user_forms_reject_missing_csrf(self):
+        client = Client(enforce_csrf_checks=True)
+        for route in ('users:register', 'users:login'):
+            self.assertEqual(client.post(reverse(route), {}).status_code, 403)
+            self.assertContains(client.get(reverse(route)), 'name="csrfmiddlewaretoken"')
+        client.force_login(self.user)
+        for route in ('users:edit_profile', 'users:change_password'):
+            self.assertEqual(client.post(reverse(route), {}).status_code, 403)
+            self.assertContains(client.get(reverse(route)), 'name="csrfmiddlewaretoken"')
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('Workflow-Secret-42!'))
+
+    def test_password_post_cannot_target_another_user(self):
+        other = User.objects.create_user(
+            email='other-workflow@example.com', password='Other-Secret-42!',
+            name='Пётр', surname='Петров', avatar='avatars/p.png',
+        )
+        self.client.force_login(self.user)
+        response = self.client.post(reverse('users:change_password'), {
+            'id': other.pk, 'user_id': other.pk,
+            'old_password': 'Workflow-Secret-42!',
+            'new_password1': 'Changed-Secret-93!', 'new_password2': 'Changed-Secret-93!',
+        })
+        self.assertRedirects(response, reverse('users:user_detail', args=[self.user.pk]))
+        other.refresh_from_db()
+        self.user.refresh_from_db()
+        self.assertTrue(other.check_password('Other-Secret-42!'))
+        self.assertTrue(self.user.check_password('Changed-Secret-93!'))
+
+    def test_profile_and_password_get_ignore_submitted_changes(self):
+        self.client.force_login(self.user)
+        before = User.objects.values().get(pk=self.user.pk)
+        for route in ('users:edit_profile', 'users:change_password'):
+            response = self.client.get(reverse(route), {
+                'name': 'Changed', 'old_password': 'Workflow-Secret-42!',
+                'new_password1': 'Changed-Secret-93!', 'new_password2': 'Changed-Secret-93!',
+            })
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse(response.context['form'].is_bound)
+            self.assertEqual(User.objects.values().get(pk=self.user.pk), before)
+
+    def test_missing_skill_on_removal(self):
+        self.client.force_login(self.user)
+        response = self.client.post(reverse('users:remove_skill', args=[self.user.pk, 999999]))
+        self.assertEqual(response.status_code, 404)

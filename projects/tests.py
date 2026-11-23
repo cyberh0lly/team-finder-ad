@@ -573,3 +573,98 @@ class ProjectParticipationTests(TestCase):
         self.client.force_login(self.member)
         self.assertEqual(self.client.post(self.url).status_code, 200)
         self.assertContains(self.client.get(self.detail_url), 'У проекта пока нет участников')
+
+
+class ProjectWorkflowTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.owner = get_user_model().objects.create_user(
+            email='project-flow@example.com', password='Owner-Workflow-42!',
+            name='Анна', surname='Иванова', avatar='avatars/a.png',
+        )
+        cls.other = get_user_model().objects.create_user(
+            email='other-flow@example.com', password='Other-Workflow-42!',
+            name='Пётр', surname='Петров', avatar='avatars/p.png',
+        )
+
+    def create_project(self):
+        self.client.force_login(self.owner)
+        response = self.client.post(reverse('projects:create_project'), {
+            'name': 'Сквозной проект', 'description': 'Первая версия',
+            'github_url': 'https://github.com/example/workflow', 'status': 'open',
+        })
+        project = Project.objects.get()
+        self.assertRedirects(response, reverse('projects:project_detail', args=[project.pk]))
+        return project
+
+    def test_creation_list_and_details_workflow(self):
+        project = self.create_project()
+        self.assertEqual(project.owner, self.owner)
+        self.assertCountEqual(project.participants.all(), [self.owner])
+        self.client.logout()
+        response = self.client.get(reverse('projects:project_list'))
+        detail_url = reverse('projects:project_detail', args=[project.pk])
+        self.assertContains(response, project.name)
+        self.assertContains(response, f'href="{detail_url}"')
+        self.assertContains(self.client.get(detail_url), project.description)
+
+    def test_creation_editing_and_completion_workflow(self):
+        project = self.create_project()
+        response = self.client.post(reverse('projects:edit_project', args=[project.pk]), {
+            'name': 'Изменённый проект', 'description': 'Вторая версия',
+            'github_url': '', 'status': 'open',
+        })
+        detail_url = reverse('projects:project_detail', args=[project.pk])
+        self.assertRedirects(response, detail_url)
+        project.refresh_from_db()
+        self.assertEqual(project.name, 'Изменённый проект')
+        self.assertEqual(project.description, 'Вторая версия')
+        complete_url = reverse('projects:complete_project', args=[project.pk])
+        self.assertEqual(self.client.post(complete_url).json(), {'status': 'ok', 'project_status': 'closed'})
+        self.assertContains(self.client.get(detail_url), 'Завершён')
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.post(complete_url).status_code, 403)
+        project.refresh_from_db()
+        self.assertEqual(project.status, 'closed')
+        self.assertCountEqual(project.participants.all(), [self.owner])
+
+    def test_creation_joining_and_leaving_workflow(self):
+        project = self.create_project()
+        before = Project.objects.values().get(pk=project.pk)
+        self.client.force_login(self.other)
+        url = reverse('projects:toggle_participate', args=[project.pk])
+        detail_url = reverse('projects:project_detail', args=[project.pk])
+        self.assertTrue(self.client.post(url).json()['participating'])
+        self.assertContains(self.client.get(detail_url), f'id="participant-{self.other.pk}"')
+        self.assertFalse(self.client.post(url).json()['participating'])
+        self.assertNotContains(self.client.get(detail_url), f'id="participant-{self.other.pk}"')
+        self.assertEqual(Project.objects.values().get(pk=project.pk), before)
+        self.assertCountEqual(project.participants.all(), [self.owner])
+
+    def test_all_public_pages_are_available_to_guest(self):
+        project = self.create_project()
+        self.client.logout()
+        for url in (
+            reverse('projects:project_list'), reverse('projects:project_detail', args=[project.pk]),
+            reverse('users:user_list'), reverse('users:user_detail', args=[self.owner.pk]),
+            reverse('users:register'), reverse('users:login'),
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 200)
+
+    def test_get_forms_do_not_create_or_modify_projects(self):
+        project = self.create_project()
+        before = Project.objects.values().get(pk=project.pk)
+        for url in (reverse('projects:create_project'), reverse('projects:edit_project', args=[project.pk])):
+            response = self.client.get(url, {'name': 'Подмена', 'status': 'closed'})
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse(response.context['form'].is_bound)
+        self.assertEqual(Project.objects.count(), 1)
+        self.assertEqual(Project.objects.values().get(pk=project.pk), before)
+
+    def test_project_creation_rejects_missing_csrf(self):
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(self.owner)
+        response = client.post(reverse('projects:create_project'), {'name': 'Подмена', 'status': 'open'})
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(Project.objects.exists())
