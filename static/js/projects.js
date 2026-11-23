@@ -3,35 +3,30 @@
   document.addEventListener("DOMContentLoaded", function() {
     const completeBtn = document.getElementById("complete-project-btn");
     if (completeBtn) {
-      completeBtn.addEventListener("click", function(e) {
+      completeBtn.addEventListener("click", async function(e) {
         e.preventDefault();
-        const projectId = completeBtn.dataset.id;
-        if (!projectId) return;
-
-        fetch(`/projects/${projectId}/complete/`, {
-          method: "POST",
-          headers: {
-            "X-CSRFToken": window.getCookie ? window.getCookie("csrftoken") : "",
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({})
-        })
-        .then(response => response.json())
-        .then(data => {
-          if (data.status === "ok") {
-            const statusEl = document.querySelector(".project-status-black");
-            if (statusEl) statusEl.textContent = "Закрыт";
-            completeBtn.remove();
-            if (window.toast) window.toast("Проект завершён", { type: 'info' });
-          } else {
-            if (window.toast) window.toast("Ошибка при завершении проекта", { type: 'error' });
-            else alert("Ошибка при завершении проекта");
+        completeBtn.disabled = true;
+        try {
+          const response = await fetch(completeBtn.dataset.url, {
+            method: "POST",
+            headers: {
+              "X-CSRFToken": document.querySelector('[name="csrfmiddlewaretoken"]').value,
+            },
+          });
+          const data = await response.json().catch(() => null);
+          if (!response.ok || data?.status !== "ok" || data.project_status !== "closed") {
+            throw new Error(data?.error || `Не удалось завершить проект (${response.status}). Обновите страницу и повторите попытку.`);
           }
-        })
-        .catch(err => {
-          console.error("Ошибка запроса:", err);
-          if (window.toast) window.toast("Ошибка сети", { type: 'error' });
-        });
+          const statusEl = document.querySelector(".project-status-black");
+          if (statusEl) statusEl.textContent = "Завершён";
+          completeBtn.remove();
+          if (window.toast) window.toast("Проект завершён", { type: 'info' });
+        } catch (error) {
+          const message = error instanceof TypeError ? "Ошибка сети. Повторите попытку." : error.message;
+          if (window.toast) window.toast(message, { type: 'error' });
+          else window.alert(message);
+          completeBtn.disabled = false;
+        }
       });
     }
 

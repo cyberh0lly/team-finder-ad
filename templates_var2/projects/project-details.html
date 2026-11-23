@@ -56,12 +56,14 @@
                 {% include 'includes/svg/share.html' %}
             </a>
             {% if request.user.is_authenticated and request.user == project.owner %}
-                <button type="button" class="black-button" disabled title="Редактирование будет доступно позже">
+                <a href="{% url 'projects:edit_project' project.id %}" class="black-button">
                     {% include 'includes/svg/pen.html' %}
-                    Редактировать
-                </button>
+                    Редактировать проект
+                </a>
                 {% if project.status == "open" %}
-                    <button type="button" class="black-button" disabled title="Завершение проекта будет доступно позже">
+                    {% csrf_token %}
+                    <button type="button" class="black-button" id="complete-project-btn"
+                            data-url="{% url 'projects:complete_project' project.id %}">
                         Завершить проект
                     </button>
                 {% endif %}

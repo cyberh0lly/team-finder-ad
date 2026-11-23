@@ -2,7 +2,7 @@ from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.test import TestCase
+from django.test import Client, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -199,21 +199,21 @@ class ProjectDetailTests(TestCase):
             with self.subTest(value=value):
                 self.assertContains(response, value)
         for label in ('Завершить проект', 'Участвовать', 'Отказаться от участия',
-                      'Редактирование будет доступно позже'):
+                      'Редактировать проект'):
             self.assertNotContains(response, label)
 
     def test_missing_project_returns_404(self):
         response = self.client.get(reverse('projects:project_detail', args=[999999]))
         self.assertEqual(response.status_code, 404)
 
-    def test_owner_controls_are_visible_but_disabled(self):
+    def test_owner_controls_are_visible(self):
         self.client.force_login(self.owner)
         response = self.client.get(self.url)
-        self.assertContains(response, 'disabled title="Редактирование будет доступно позже"')
-        self.assertContains(response, 'disabled title="Завершение проекта будет доступно позже"')
+        self.assertContains(response, f'href="{reverse("projects:edit_project", args=[self.project.pk])}"')
+        self.assertContains(response, f'data-url="{reverse("projects:complete_project", args=[self.project.pk])}"')
         self.assertContains(response, 'Завершить проект')
         self.assertNotContains(response, 'Участвовать')
-        self.assertNotContains(response, 'id="complete-project-btn"')
+        self.assertContains(response, 'id="complete-project-btn"')
 
     def test_non_owner_and_member_controls(self):
         for viewer, expected, absent in (
@@ -227,7 +227,7 @@ class ProjectDetailTests(TestCase):
                 self.assertNotContains(response, absent)
                 self.assertContains(response, 'disabled title="Управление участием будет доступно позже"')
                 self.assertNotContains(response, 'Завершить проект')
-                self.assertNotContains(response, 'Редактирование будет доступно позже')
+                self.assertNotContains(response, 'Редактировать проект')
                 self.assertNotContains(response, 'id="participate-btn"')
 
     def test_closed_project_has_no_complete_button(self):
@@ -369,3 +369,106 @@ class ProjectCreationTests(TestCase):
             response = self.client.get(url)
             self.assertContains(response, f'href="{self.url}"')
             self.assertNotContains(response, 'href="/projects/create-project"')
+
+
+class ProjectEditingTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.owner = get_user_model().objects.create_user(
+            email='editor@example.com', name='Анна', surname='Иванова', avatar='avatars/a.png',
+        )
+        cls.other = get_user_model().objects.create_user(
+            email='outsider@example.com', name='Пётр', surname='Петров', avatar='avatars/p.png',
+        )
+        cls.project = Project.objects.create(name='Исходный проект', owner=cls.owner)
+        cls.project.participants.add(cls.owner, cls.other)
+        cls.edit_url = reverse('projects:edit_project', args=[cls.project.pk])
+        cls.complete_url = reverse('projects:complete_project', args=[cls.project.pk])
+
+    def test_edit_get_initial_data(self):
+        self.client.force_login(self.owner)
+        response = self.client.get(self.edit_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.context['is_edit'], True)
+        self.assertEqual(response.context['form'].instance, self.project)
+        self.assertContains(response, 'Исходный проект')
+        self.assertContains(response, 'Сохранить изменения')
+
+    def test_edit_permissions_on_get_and_post(self):
+        for method in (self.client.get, self.client.post):
+            self.assertRedirects(method(self.edit_url), f'{reverse("users:login")}?next={self.edit_url}')
+        self.client.force_login(self.other)
+        for method in (self.client.get, self.client.post):
+            self.assertEqual(method(self.edit_url).status_code, 403)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.name, 'Исходный проект')
+
+    def test_edit_preserves_owner_participants_and_creation_date(self):
+        self.client.force_login(self.owner)
+        created_at = self.project.created_at
+        response = self.client.post(self.edit_url, {
+            'name': 'Новое название', 'description': 'Новое описание',
+            'github_url': 'https://github.com/example/project', 'status': 'open',
+            'owner': self.other.pk, 'participants': [], 'created_at': '2000-01-01',
+        })
+        self.assertRedirects(response, reverse('projects:project_detail', args=[self.project.pk]))
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.name, 'Новое название')
+        self.assertEqual(self.project.description, 'Новое описание')
+        self.assertEqual(self.project.owner, self.owner)
+        self.assertEqual(self.project.created_at, created_at)
+        self.assertCountEqual(self.project.participants.all(), [self.owner, self.other])
+        self.assertEqual(Project.objects.count(), 1)
+
+    def test_invalid_edit_is_not_saved(self):
+        self.client.force_login(self.owner)
+        response = self.client.post(self.edit_url, {
+            'name': 'Не сохранится', 'github_url': 'https://example.com', 'status': 'open',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('github_url', response.context['form'].errors)
+        self.assertContains(response, 'Не сохранится')
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.name, 'Исходный проект')
+
+    def test_missing_project(self):
+        self.client.force_login(self.owner)
+        url = reverse('projects:edit_project', args=[999999])
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.assertEqual(self.client.post(url).status_code, 404)
+        self.assertEqual(self.client.post(reverse('projects:complete_project', args=[999999])).status_code, 404)
+
+    def test_complete_project_preserves_other_data(self):
+        self.client.force_login(self.owner)
+        before = Project.objects.values().get(pk=self.project.pk)
+        response = self.client.post(self.complete_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {'status': 'ok', 'project_status': 'closed'})
+        before['status'] = 'closed'
+        self.assertEqual(Project.objects.values().get(pk=self.project.pk), before)
+        self.assertCountEqual(self.project.participants.all(), [self.owner, self.other])
+        response = self.client.post(self.complete_url)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['error'], 'Проект уже завершён.')
+        self.assertEqual(Project.objects.values().get(pk=self.project.pk), before)
+        detail = self.client.get(reverse('projects:project_detail', args=[self.project.pk]))
+        self.assertContains(detail, 'Завершён')
+        self.assertNotContains(detail, 'id="complete-project-btn"')
+
+    def test_completion_permissions_and_method(self):
+        self.assertEqual(self.client.post(self.complete_url).status_code, 403)
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.post(self.complete_url).status_code, 403)
+        self.client.force_login(self.owner)
+        self.assertEqual(self.client.get(self.complete_url).status_code, 405)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, 'open')
+
+    def test_csrf_is_required(self):
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(self.owner)
+        self.assertEqual(client.post(self.complete_url).status_code, 403)
+        self.assertEqual(client.post(self.edit_url).status_code, 403)
+        client.get(reverse('projects:project_detail', args=[self.project.pk]))
+        response = client.post(self.complete_url, HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value)
+        self.assertEqual(response.status_code, 200)
