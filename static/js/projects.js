@@ -31,77 +31,31 @@
     }
 
     const participateBtn = document.getElementById("participate-btn");
-    const participantsList = document.getElementById("participants-list");
-    const participantsCount = document.getElementById("participants-count");
-    if (participateBtn && participantsList && participantsCount) {
-      const userId = participateBtn.dataset.userId || null;
-      const projectId = participateBtn.dataset.project;
-      const userName = participateBtn.dataset.userName || "";
-      const userAvatar = participateBtn.dataset.userAvatar || "";
-
-      participateBtn.addEventListener("click", function(e) {
+    if (participateBtn) {
+      participateBtn.addEventListener("click", async function(e) {
         e.preventDefault();
-        if (!projectId) return;
-
-        fetch(`/projects/${projectId}/toggle-participate/`, {
-          method: "POST",
-          headers: {
-            "X-CSRFToken": window.getCookie ? window.getCookie("csrftoken") : "",
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({})
-        })
-        .then(resp => resp.json())
-        .then(data => {
-          if (data.status !== "ok") {
-            if (window.toast) window.toast("Ошибка при изменении участия", { type: 'error' });
-            else alert("Ошибка при изменении участия");
-            return;
+        if (participateBtn.disabled) return;
+        participateBtn.disabled = true;
+        try {
+          const response = await fetch(participateBtn.dataset.url, {
+            method: "POST",
+            headers: {
+              "X-CSRFToken": document.querySelector('[name="csrfmiddlewaretoken"]').value,
+            },
+          });
+          const data = await response.json().catch(() => null);
+          if (!response.ok || data?.status !== "ok" || typeof data.participating !== "boolean") {
+            throw new Error(data?.error || `Не удалось изменить участие (${response.status}). Обновите страницу и повторите попытку.`);
           }
-
-          if (data.participant) {
-            participateBtn.textContent = "Отказаться от участия";
-
-            const noParticipants = document.getElementById("no-participants");
-            if (noParticipants) noParticipants.remove();
-
-            const a = document.createElement("a");
-            a.href = `/users/${userId}`;
-            a.id = `participant-${userId}`;
-            a.innerHTML = `
-              <div class="participant-item">
-                <img src="${userAvatar}" alt="Аватар" class="participant-avatar">
-                <div class="participant-info">
-                  <span class="participant-name">${userName}</span>
-                  <span class="participant-role">Участник</span>
-                </div>
-              </div>
-            `;
-            participantsList.appendChild(a);
-
-            participantsCount.textContent = parseInt(participantsCount.textContent) + 1;
-
-          } else {
-            participateBtn.textContent = "Участвовать";
-
-            const el = document.getElementById(`participant-${userId}`);
-            if (el) el.remove();
-
-            const newCount = parseInt(participantsCount.textContent) - 1;
-            participantsCount.textContent = newCount;
-
-            if (newCount === 0) {
-              const p = document.createElement("p");
-              p.id = "no-participants";
-              p.textContent = "Пока нет участников";
-              participantsList.appendChild(p);
-            }
-          }
-        })
-        .catch(err => {
-          console.error("Ошибка запроса:", err);
-          if (window.toast) window.toast("Ошибка сети", { type: 'error' });
-        });
+          participateBtn.textContent = data.participating ? "Отказаться от участия" : "Участвовать";
+          // Шаблон заново покажет актуальный список участников и доступные действия.
+          window.location.reload();
+        } catch (error) {
+          const message = error instanceof TypeError ? "Ошибка сети. Повторите попытку." : error.message;
+          if (window.toast) window.toast(message, { type: 'error' });
+          else window.alert(message);
+          participateBtn.disabled = false;
+        }
       });
     }
   });

@@ -225,10 +225,10 @@ class ProjectDetailTests(TestCase):
                 response = self.client.get(self.url)
                 self.assertContains(response, expected)
                 self.assertNotContains(response, absent)
-                self.assertContains(response, 'disabled title="Управление участием будет доступно позже"')
+                self.assertContains(response, f'data-url="{reverse("projects:toggle_participate", args=[self.project.pk])}"')
                 self.assertNotContains(response, 'Завершить проект')
                 self.assertNotContains(response, 'Редактировать проект')
-                self.assertNotContains(response, 'id="participate-btn"')
+                self.assertContains(response, 'id="participate-btn"')
 
     def test_closed_project_has_no_complete_button(self):
         self.project.status = 'closed'
@@ -472,3 +472,104 @@ class ProjectEditingTests(TestCase):
         client.get(reverse('projects:project_detail', args=[self.project.pk]))
         response = client.post(self.complete_url, HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value)
         self.assertEqual(response.status_code, 200)
+
+
+class ProjectParticipationTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.owner = get_user_model().objects.create_user(
+            email='participation-owner@example.com', name='Анна', surname='Иванова', avatar='avatars/a.png',
+        )
+        cls.member = get_user_model().objects.create_user(
+            email='participation-member@example.com', name='Пётр', surname='Петров', avatar='avatars/p.png',
+        )
+        cls.other = get_user_model().objects.create_user(
+            email='participation-other@example.com', name='Мария', surname='Смирнова', avatar='avatars/m.png',
+        )
+        cls.project = Project.objects.create(name='Команда', owner=cls.owner)
+        cls.project.participants.add(cls.owner)
+        cls.url = reverse('projects:toggle_participate', args=[cls.project.pk])
+        cls.detail_url = reverse('projects:project_detail', args=[cls.project.pk])
+
+    def test_join_and_leave_with_correct_json_and_rendering(self):
+        self.client.force_login(self.member)
+        for participating, label in ((True, 'Отказаться от участия'), (False, 'Участвовать')):
+            response = self.client.post(self.url)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {'status': 'ok', 'participating': participating})
+            self.assertEqual(self.project.participants.filter(pk=self.member.pk).exists(), participating)
+            detail = self.client.get(self.detail_url)
+            self.assertContains(detail, label)
+            if participating:
+                self.assertContains(detail, f'id="participant-{self.member.pk}"')
+                self.assertContains(detail, self.member.avatar.url)
+                self.assertContains(detail, f'href="{reverse("users:user_detail", args=[self.member.pk])}"')
+            else:
+                self.assertNotContains(detail, f'id="participant-{self.member.pk}"')
+        self.member.refresh_from_db()
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.owner, self.owner)
+
+    def test_guest_and_get_cannot_change_membership(self):
+        self.assertEqual(self.client.post(self.url).status_code, 403)
+        self.assertNotContains(self.client.get(self.detail_url), 'id="participate-btn"')
+        self.client.force_login(self.member)
+        self.assertEqual(self.client.get(self.url).status_code, 405)
+        self.assertCountEqual(self.project.participants.all(), [self.owner])
+
+    def test_owner_cannot_leave(self):
+        self.client.force_login(self.owner)
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 403)
+        self.assertIn('error', response.json())
+        self.assertCountEqual(self.project.participants.all(), [self.owner])
+        self.assertNotContains(self.client.get(self.detail_url), 'id="participate-btn"')
+
+    def test_closed_project_allows_leaving_but_not_joining(self):
+        self.project.status = 'closed'
+        self.project.save()
+        self.client.force_login(self.member)
+        self.assertNotContains(self.client.get(self.detail_url), 'id="participate-btn"')
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('error', response.json())
+        self.assertFalse(self.project.participants.filter(pk=self.member.pk).exists())
+        self.project.participants.add(self.member)
+        self.assertContains(self.client.get(self.detail_url), 'Отказаться от участия')
+        response = self.client.post(self.url)
+        self.assertEqual(response.json(), {'status': 'ok', 'participating': False})
+        self.assertNotContains(self.client.get(self.detail_url), 'id="participate-btn"')
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, 'closed')
+
+    def test_post_cannot_act_as_another_user(self):
+        self.client.force_login(self.member)
+        for participating in (True, False):
+            response = self.client.post(self.url, {'user_id': self.other.pk, 'owner': self.other.pk})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(self.project.participants.filter(pk=self.member.pk).exists(), participating)
+            self.assertFalse(self.project.participants.filter(pk=self.other.pk).exists())
+            self.assertTrue(self.project.participants.filter(pk=self.owner.pk).exists())
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.owner, self.owner)
+
+    def test_missing_project_returns_json_404(self):
+        self.client.force_login(self.member)
+        response = self.client.post(reverse('projects:toggle_participate', args=[999999]))
+        self.assertEqual(response.status_code, 404)
+        self.assertIn('error', response.json())
+
+    def test_csrf_protection(self):
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(self.member)
+        self.assertEqual(client.post(self.url).status_code, 403)
+        client.get(self.detail_url)
+        response = client.post(self.url, HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['participating'])
+
+    def test_last_member_leaves_empty_list(self):
+        self.project.participants.set([self.member])
+        self.client.force_login(self.member)
+        self.assertEqual(self.client.post(self.url).status_code, 200)
+        self.assertContains(self.client.get(self.detail_url), 'У проекта пока нет участников')

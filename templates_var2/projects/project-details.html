@@ -69,13 +69,17 @@
                 {% endif %}
             {% else %}
                 {% if request.user.is_authenticated %}
-                    <button type="button" class="black-button" disabled title="Управление участием будет доступно позже">
+                    {% if project.status == 'open' or request.user in project.participants.all %}
+                    {% csrf_token %}
+                    <button type="button" class="black-button" id="participate-btn"
+                            data-url="{% url 'projects:toggle_participate' project.id %}">
                         {% if request.user in project.participants.all %}
                             Отказаться от участия
                         {% else %}
                             Участвовать
                         {% endif %}
                     </button>
+                    {% endif %}
                 {% endif %}
             {% endif %}
         </div>

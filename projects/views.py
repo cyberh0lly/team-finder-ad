@@ -1,7 +1,7 @@
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.core.paginator import Paginator
-from django.http import JsonResponse
+from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
@@ -70,3 +70,23 @@ def complete_project(request, project_id):
     project.status = 'closed'
     project.save(update_fields=['status'])
     return JsonResponse({'status': 'ok', 'project_status': 'closed'})
+
+
+@require_POST
+def toggle_participate(request, project_id):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Для участия необходимо войти в аккаунт.'}, status=403)
+    try:
+        project = get_object_or_404(Project, pk=project_id)
+    except Http404:
+        return JsonResponse({'error': 'Проект не найден.'}, status=404)
+    if request.user.pk == project.owner_id:
+        return JsonResponse({'error': 'Автор не может отказаться от участия в своём проекте.'}, status=403)
+    participating = project.participants.filter(pk=request.user.pk).exists()
+    if participating:
+        project.participants.remove(request.user)
+    else:
+        if project.status != 'open':
+            return JsonResponse({'error': 'Нельзя присоединиться к завершённому проекту.'}, status=400)
+        project.participants.add(request.user)
+    return JsonResponse({'status': 'ok', 'participating': not participating})
