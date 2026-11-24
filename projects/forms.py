@@ -18,7 +18,9 @@ class ProjectForm(forms.ModelForm):
         error_messages = {
             'name': {
                 'required': 'Введите название проекта.',
-                'max_length': 'Название проекта не должно превышать 200 символов.',
+                'max_length': (
+                    'Название проекта не должно превышать 200 символов.'
+                ),
             },
             'github_url': {'invalid': 'Введите корректную ссылку на GitHub.'},
             'status': {

@@ -1,13 +1,14 @@
 from io import BytesIO
 from tempfile import TemporaryDirectory
+from urllib.parse import urlencode
 
-from PIL import Image
 from django.contrib.auth.forms import PasswordChangeForm
-from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
+from PIL import Image
 
 from .forms import UserProfileForm
 from .models import Skill, User
@@ -45,7 +46,9 @@ class UserDetailTests(TestCase):
         ):
             with self.subTest(value=value):
                 self.assertContains(response, value)
-        self.assertNotContains(response, 'href="/users/edit-profile/" class="black-button"')
+        self.assertNotContains(
+            response, 'href="/users/edit-profile/" class="black-button"'
+        )
         self.assertNotContains(response, 'Добавить проект')
         self.assertContains(response, '<h3>Навыки</h3>', html=True)
         self.assertContains(response, 'Навыки не указаны')
@@ -60,7 +63,9 @@ class UserDetailTests(TestCase):
     def test_owner_sees_profile_actions(self):
         self.client.force_login(self.user)
         response = self.client.get(self.url)
-        self.assertContains(response, 'href="/users/edit-profile/" class="black-button"')
+        self.assertContains(
+            response, 'href="/users/edit-profile/" class="black-button"'
+        )
         self.assertContains(response, 'Добавить проект')
         self.assertContains(response, 'id="add-skill-btn"')
 
@@ -78,7 +83,9 @@ class UserDetailTests(TestCase):
             '<span class="username">Пётр Петров</span>',
             html=True,
         )
-        self.assertNotContains(response, 'href="/users/edit-profile/" class="black-button"')
+        self.assertNotContains(
+            response, 'href="/users/edit-profile/" class="black-button"'
+        )
         self.assertNotContains(response, 'Добавить проект')
 
     def test_empty_optional_fields(self):
@@ -168,7 +175,8 @@ class UserProfileEditTests(TestCase):
                 )
                 self.assertTrue(form.is_valid(), form.errors)
                 self.assertEqual(
-                    form.cleaned_data['phone'], '+79991234567' if phone else '',
+                    form.cleaned_data['phone'],
+                    '+79991234567' if phone else '',
                 )
         for phone in ('123', '+7999 1234567', '79991234567', '8abcdefghij'):
             with self.subTest(invalid=phone):
@@ -214,7 +222,9 @@ class UserProfileEditTests(TestCase):
             ({'github_url': 'https://example.com'}, 'github_url'),
         ):
             with self.subTest(field=field, changes=changes):
-                response = self.client.post(self.url, self.profile_data(**changes))
+                response = self.client.post(
+                    self.url, self.profile_data(**changes)
+                )
                 self.assertEqual(response.status_code, 200)
                 form = response.context['form']
                 self.assertIn(field, form.errors)
@@ -236,11 +246,16 @@ class UserProfileEditTests(TestCase):
                     self.url, self.profile_data(avatar=upload),
                 )
                 self.assertRedirects(
-                    response, reverse('users:user_detail', args=[self.user.pk]),
+                    response,
+                    reverse('users:user_detail', args=[self.user.pk]),
                 )
                 self.user.refresh_from_db()
-                self.assertTrue(self.user.avatar.name.startswith('avatars/new'))
-                self.assertTrue(self.user.avatar.storage.exists(self.user.avatar.name))
+                self.assertTrue(
+                    self.user.avatar.name.startswith('avatars/new')
+                )
+                self.assertTrue(
+                    self.user.avatar.storage.exists(self.user.avatar.name)
+                )
 
     def test_invalid_image_is_rejected(self):
         self.client.force_login(self.user)
@@ -306,10 +321,16 @@ class ChangePasswordTests(TestCase):
         self.client.force_login(self.user)
         for changes, field, code in (
             ({'old_password': 'wrong'}, 'old_password', 'password_incorrect'),
-            ({'new_password2': 'different'}, 'new_password2', 'password_mismatch'),
+            (
+                {'new_password2': 'different'},
+                'new_password2',
+                'password_mismatch',
+            ),
         ):
             with self.subTest(field=field):
-                response = self.client.post(self.url, self.password_data(**changes))
+                response = self.client.post(
+                    self.url, self.password_data(**changes)
+                )
                 self.assertEqual(response.status_code, 200)
                 form = response.context['form']
                 self.assertEqual(form.errors.as_data()[field][0].code, code)
@@ -317,10 +338,17 @@ class ChangePasswordTests(TestCase):
                 self.user.refresh_from_db()
                 self.assertTrue(self.user.check_password(self.old_password))
 
-    @override_settings(AUTH_PASSWORD_VALIDATORS=[{
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-        'OPTIONS': {'min_length': 12},
-    }])
+    @override_settings(
+        AUTH_PASSWORD_VALIDATORS=[
+            {
+                'NAME': (
+                    'django.contrib.auth.password_validation.'
+                    'MinimumLengthValidator'
+                ),
+                'OPTIONS': {'min_length': 12},
+            }
+        ]
+    )
     def test_configured_password_validator_is_used(self):
         self.client.force_login(self.user)
         response = self.client.post(self.url, self.password_data(
@@ -329,7 +357,8 @@ class ChangePasswordTests(TestCase):
         self.assertEqual(response.status_code, 200)
         form = response.context['form']
         self.assertEqual(
-            form.errors.as_data()['new_password2'][0].code, 'password_too_short',
+            form.errors.as_data()['new_password2'][0].code,
+            'password_too_short',
         )
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password(self.old_password))
@@ -407,7 +436,9 @@ class SkillManagementTests(TestCase):
         )
         cls.skill = Skill.objects.create(name='Python')
         cls.add_url = reverse('users:add_skill', args=[cls.owner.pk])
-        cls.remove_url = reverse('users:remove_skill', args=[cls.owner.pk, cls.skill.pk])
+        cls.remove_url = reverse(
+            'users:remove_skill', args=[cls.owner.pk, cls.skill.pk]
+        )
         cls.profile_url = reverse('users:user_detail', args=[cls.owner.pk])
 
     def test_profile_skills_and_owner_controls(self):
@@ -420,7 +451,10 @@ class SkillManagementTests(TestCase):
                 response = self.client.get(self.profile_url)
                 self.assertContains(response, 'Python')
                 self.assertNotContains(response, 'Навыки не указаны')
-                for control in ('id="add-skill-btn"', 'class="remove-skill-btn"'):
+                for control in (
+                    'id="add-skill-btn"',
+                    'class="remove-skill-btn"',
+                ):
                     if viewer == self.owner:
                         self.assertContains(response, control)
                     else:
@@ -445,7 +479,9 @@ class SkillManagementTests(TestCase):
         self.client.force_login(self.owner)
         for added in (True, False):
             response = self.client.post(
-                self.add_url, {'skill_id': self.skill.pk}, content_type='application/json',
+                self.add_url,
+                {'skill_id': self.skill.pk},
+                content_type='application/json',
             )
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json(), {
@@ -458,7 +494,9 @@ class SkillManagementTests(TestCase):
         self.client.force_login(self.owner)
         for created in (True, False):
             response = self.client.post(
-                self.add_url, {'name': '  Django  '}, content_type='application/json',
+                self.add_url,
+                {'name': '  Django  '},
+                content_type='application/json',
             )
             self.assertEqual(response.status_code, 200)
             skill = Skill.objects.get(name='Django')
@@ -469,15 +507,29 @@ class SkillManagementTests(TestCase):
 
     def test_invalid_payload_and_missing_objects(self):
         self.client.force_login(self.owner)
-        for data in ({}, [], {'name': ''}, {'name': '   '}, {'name': 'x' * 125},
-                     {'name': 3}, {'skill_id': 'bad'}, {'skill_id': None}):
+        for data in (
+            {},
+            [],
+            {'name': ''},
+            {'name': '   '},
+            {'name': 'x' * 125},
+            {'name': 3},
+            {'skill_id': 'bad'},
+            {'skill_id': None},
+        ):
             with self.subTest(data=data):
-                response = self.client.post(self.add_url, data, content_type='application/json')
+                response = self.client.post(
+                    self.add_url, data, content_type='application/json'
+                )
                 self.assertEqual(response.status_code, 400)
-        response = self.client.post(self.add_url, '{', content_type='application/json')
+        response = self.client.post(
+            self.add_url, '{', content_type='application/json'
+        )
         self.assertEqual(response.status_code, 400)
         response = self.client.post(
-            self.add_url, {'skill_id': 999999}, content_type='application/json',
+            self.add_url,
+            {'skill_id': 999999},
+            content_type='application/json',
         )
         self.assertEqual(response.status_code, 404)
         response = self.client.post(
@@ -496,7 +548,9 @@ class SkillManagementTests(TestCase):
             for url in (self.add_url, self.remove_url):
                 with self.subTest(viewer=viewer, url=url):
                     response = self.client.post(
-                        url, {'name': 'Forbidden'}, content_type='application/json',
+                        url,
+                        {'name': 'Forbidden'},
+                        content_type='application/json',
                     )
                     self.assertEqual(response.status_code, 403)
         self.assertFalse(Skill.objects.filter(name='Forbidden').exists())
@@ -517,7 +571,9 @@ class SkillManagementTests(TestCase):
         self.client.force_login(self.owner)
         for url in (self.add_url, self.remove_url):
             self.assertEqual(self.client.get(url).status_code, 405)
-        self.assertEqual(self.client.post(reverse('users:skill_list')).status_code, 405)
+        self.assertEqual(
+            self.client.post(reverse('users:skill_list')).status_code, 405
+        )
         client = Client(enforce_csrf_checks=True)
         client.force_login(self.owner)
         for url in (self.add_url, self.remove_url):
@@ -525,11 +581,16 @@ class SkillManagementTests(TestCase):
         client.get(self.profile_url)
         token = client.cookies['csrftoken'].value
         response = client.post(
-            self.add_url, {'skill_id': self.skill.pk}, content_type='application/json',
+            self.add_url,
+            {'skill_id': self.skill.pk},
+            content_type='application/json',
             HTTP_X_CSRFTOKEN=token,
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(client.post(self.remove_url, HTTP_X_CSRFTOKEN=token).status_code, 200)
+        self.assertEqual(
+            client.post(self.remove_url, HTTP_X_CSRFTOKEN=token).status_code,
+            200,
+        )
 
 
 class ParticipantListTests(TestCase):
@@ -555,7 +616,8 @@ class ParticipantListTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, 'users/participants.html')
         self.assertQuerySetEqual(
-            response.context['participants'], [user.pk for user in self.members],
+            response.context['participants'],
+            [user.pk for user in self.members],
             transform=lambda user: user.pk,
         )
         self.assertEqual(list(response.context['page_obj']), self.members[:12])
@@ -563,9 +625,13 @@ class ParticipantListTests(TestCase):
         self.assertContains(response, self.members[0].avatar.url)
         self.assertContains(response, 'Участник 0 Тестовый')
         for member in self.members[:12]:
-            self.assertContains(response, f'href="{reverse("users:user_detail", args=[member.pk])}"')
+            self.assertContains(
+                response,
+                f'href="{reverse("users:user_detail", args=[member.pk])}"',
+            )
         self.assertEqual(
-            list(response.context['all_skills']), [self.special, self.unused, self.python],
+            list(response.context['all_skills']),
+            [self.special, self.unused, self.python],
         )
         self.assertNotContains(response, 'class="filter-reset"')
 
@@ -573,14 +639,19 @@ class ParticipantListTests(TestCase):
         response = self.client.get(self.url, {'skill': 'Python'})
         self.assertEqual(response.context['page_obj'].paginator.count, 13)
         self.assertQuerySetEqual(
-            response.context['participants'], [user.pk for user in self.members[:13]],
+            response.context['participants'],
+            [user.pk for user in self.members[:13]],
             transform=lambda user: user.pk,
         )
         self.assertContains(
-            response, '<a href="?skill=Python" class="filter-chip active">Python</a>', html=True,
+            response,
+            '<a href="?skill=Python" class="filter-chip active">Python</a>',
+            html=True,
         )
         self.assertContains(
-            response, f'<a href="{self.url}" class="filter-reset">Сбросить</a>', html=True,
+            response,
+            f'<a href="{self.url}" class="filter-reset">Сбросить</a>',
+            html=True,
         )
         reset = self.client.get(self.url)
         self.assertEqual(reset.context['page_obj'].paginator.count, 25)
@@ -591,7 +662,9 @@ class ParticipantListTests(TestCase):
                 response = self.client.get(self.url, {'skill': skill})
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(list(response.context['page_obj']), [])
-                self.assertContains(response, 'Участники с этим навыком не найдены')
+                self.assertContains(
+                    response, 'Участники с этим навыком не найдены'
+                )
 
     def test_pagination_and_invalid_page_numbers(self):
         for page, expected in (
@@ -605,15 +678,17 @@ class ParticipantListTests(TestCase):
                 self.assertEqual(list(response.context['page_obj']), expected)
 
     def test_filtered_pagination_preserves_encoded_skill(self):
-        from urllib.parse import urlencode
-
         for skill in (self.python, self.special):
             with self.subTest(skill=skill.name):
                 response = self.client.get(self.url, {'skill': skill.name})
                 prefix = urlencode({'skill': skill.name})
                 self.assertContains(response, f'href="?{prefix}&amp;page=2"')
-                response = self.client.get(self.url, {'skill': skill.name, 'page': 2})
-                self.assertEqual(list(response.context['page_obj']), self.members[12:13])
+                response = self.client.get(
+                    self.url, {'skill': skill.name, 'page': 2}
+                )
+                self.assertEqual(
+                    list(response.context['page_obj']), self.members[12:13]
+                )
                 self.assertContains(response, f'href="?{prefix}&amp;page=1"')
 
     def test_empty_database(self):
@@ -644,11 +719,18 @@ class UserWorkflowTests(TestCase):
         )
 
     def test_registration_login_and_profile_edit(self):
-        response = self.client.post(reverse('users:register'), {
-            'email': 'new@example.com', 'name': 'Мария', 'surname': 'Петрова',
-            'password1': 'Registration-Secret-42!', 'password2': 'Registration-Secret-42!',
-            'is_staff': True, 'is_superuser': True,
-        })
+        response = self.client.post(
+            reverse('users:register'),
+            {
+                'email': 'new@example.com',
+                'name': 'Мария',
+                'surname': 'Петрова',
+                'password1': 'Registration-Secret-42!',
+                'password2': 'Registration-Secret-42!',
+                'is_staff': True,
+                'is_superuser': True,
+            },
+        )
         self.assertRedirects(response, reverse('users:login'))
         user = User.objects.get(email='new@example.com')
         self.assertFalse(user.is_staff)
@@ -673,18 +755,33 @@ class UserWorkflowTests(TestCase):
 
     def test_skill_profile_filter_and_remove_workflow(self):
         self.client.force_login(self.user)
-        response = self.client.post(reverse('users:add_skill', args=[self.user.pk]),
-                                    {'name': 'WorkflowPython'}, content_type='application/json')
+        response = self.client.post(
+            reverse('users:add_skill', args=[self.user.pk]),
+            {'name': 'WorkflowPython'},
+            content_type='application/json',
+        )
         self.assertEqual(response.status_code, 200)
         skill_id = response.json()['skill_id']
-        self.assertContains(self.client.get(reverse('users:user_detail', args=[self.user.pk])), 'WorkflowPython')
-        response = self.client.get(reverse('users:user_list'), {'skill': 'WorkflowPython'})
+        self.assertContains(
+            self.client.get(reverse('users:user_detail', args=[self.user.pk])),
+            'WorkflowPython',
+        )
+        response = self.client.get(
+            reverse('users:user_list'), {'skill': 'WorkflowPython'}
+        )
         self.assertEqual(list(response.context['page_obj']), [self.user])
-        response = self.client.post(reverse('users:remove_skill', args=[self.user.pk, skill_id]))
+        response = self.client.post(
+            reverse('users:remove_skill', args=[self.user.pk, skill_id])
+        )
         self.assertEqual(response.status_code, 200)
-        response = self.client.get(reverse('users:user_list'), {'skill': 'WorkflowPython'})
+        response = self.client.get(
+            reverse('users:user_list'), {'skill': 'WorkflowPython'}
+        )
         self.assertEqual(list(response.context['page_obj']), [])
-        self.assertNotContains(self.client.get(reverse('users:user_detail', args=[self.user.pk])), 'WorkflowPython')
+        self.assertNotContains(
+            self.client.get(reverse('users:user_detail', args=[self.user.pk])),
+            'WorkflowPython',
+        )
         self.assertTrue(Skill.objects.filter(pk=skill_id).exists())
 
     def test_empty_auth_posts_show_required_errors(self):
@@ -702,10 +799,16 @@ class UserWorkflowTests(TestCase):
             'email': self.user.email, 'password': 'wrong',
         })
         self.assertTrue(response.context['form'].non_field_errors())
-        response = self.client.post(reverse('users:register'), {
-            'email': self.user.email, 'name': 'Анна', 'surname': 'Иванова',
-            'password1': 'Test-Secret-42!', 'password2': 'Different-Secret-42!',
-        })
+        response = self.client.post(
+            reverse('users:register'),
+            {
+                'email': self.user.email,
+                'name': 'Анна',
+                'surname': 'Иванова',
+                'password1': 'Test-Secret-42!',
+                'password2': 'Different-Secret-42!',
+            },
+        )
         self.assertIn('email', response.context['form'].errors)
         self.assertIn('password2', response.context['form'].errors)
         self.assertEqual(User.objects.count(), 1)
@@ -719,7 +822,9 @@ class UserWorkflowTests(TestCase):
         self.assertEqual(client.post(url).status_code, 403)
         self.assertEqual(client.session['_auth_user_id'], str(self.user.pk))
         client.get(reverse('users:user_detail', args=[self.user.pk]))
-        response = client.post(url, HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value)
+        response = client.post(
+            url, HTTP_X_CSRFTOKEN=client.cookies['csrftoken'].value
+        )
         self.assertRedirects(response, reverse('users:login'))
         self.assertNotIn('_auth_user_id', client.session)
 
@@ -727,11 +832,15 @@ class UserWorkflowTests(TestCase):
         client = Client(enforce_csrf_checks=True)
         for route in ('users:register', 'users:login'):
             self.assertEqual(client.post(reverse(route), {}).status_code, 403)
-            self.assertContains(client.get(reverse(route)), 'name="csrfmiddlewaretoken"')
+            self.assertContains(
+                client.get(reverse(route)), 'name="csrfmiddlewaretoken"'
+            )
         client.force_login(self.user)
         for route in ('users:edit_profile', 'users:change_password'):
             self.assertEqual(client.post(reverse(route), {}).status_code, 403)
-            self.assertContains(client.get(reverse(route)), 'name="csrfmiddlewaretoken"')
+            self.assertContains(
+                client.get(reverse(route)), 'name="csrfmiddlewaretoken"'
+            )
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password('Workflow-Secret-42!'))
 
@@ -741,12 +850,19 @@ class UserWorkflowTests(TestCase):
             name='Пётр', surname='Петров', avatar='avatars/p.png',
         )
         self.client.force_login(self.user)
-        response = self.client.post(reverse('users:change_password'), {
-            'id': other.pk, 'user_id': other.pk,
-            'old_password': 'Workflow-Secret-42!',
-            'new_password1': 'Changed-Secret-93!', 'new_password2': 'Changed-Secret-93!',
-        })
-        self.assertRedirects(response, reverse('users:user_detail', args=[self.user.pk]))
+        response = self.client.post(
+            reverse('users:change_password'),
+            {
+                'id': other.pk,
+                'user_id': other.pk,
+                'old_password': 'Workflow-Secret-42!',
+                'new_password1': 'Changed-Secret-93!',
+                'new_password2': 'Changed-Secret-93!',
+            },
+        )
+        self.assertRedirects(
+            response, reverse('users:user_detail', args=[self.user.pk])
+        )
         other.refresh_from_db()
         self.user.refresh_from_db()
         self.assertTrue(other.check_password('Other-Secret-42!'))
@@ -756,15 +872,24 @@ class UserWorkflowTests(TestCase):
         self.client.force_login(self.user)
         before = User.objects.values().get(pk=self.user.pk)
         for route in ('users:edit_profile', 'users:change_password'):
-            response = self.client.get(reverse(route), {
-                'name': 'Changed', 'old_password': 'Workflow-Secret-42!',
-                'new_password1': 'Changed-Secret-93!', 'new_password2': 'Changed-Secret-93!',
-            })
+            response = self.client.get(
+                reverse(route),
+                {
+                    'name': 'Changed',
+                    'old_password': 'Workflow-Secret-42!',
+                    'new_password1': 'Changed-Secret-93!',
+                    'new_password2': 'Changed-Secret-93!',
+                },
+            )
             self.assertEqual(response.status_code, 200)
             self.assertFalse(response.context['form'].is_bound)
-            self.assertEqual(User.objects.values().get(pk=self.user.pk), before)
+            self.assertEqual(
+                User.objects.values().get(pk=self.user.pk), before
+            )
 
     def test_missing_skill_on_removal(self):
         self.client.force_login(self.user)
-        response = self.client.post(reverse('users:remove_skill', args=[self.user.pk, 999999]))
+        response = self.client.post(
+            reverse('users:remove_skill', args=[self.user.pk, 999999])
+        )
         self.assertEqual(response.status_code, 404)

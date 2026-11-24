@@ -9,8 +9,11 @@ urlpatterns = [
     path('skills/', views.skill_list, name='skill_list'),
     path('<int:user_id>/skills/add', views.add_skill, name='add_skill'),
     path('<int:user_id>/skills/add/', views.add_skill),
-    path('<int:user_id>/skills/<int:skill_id>/remove/',
-         views.remove_skill, name='remove_skill'),
+    path(
+        '<int:user_id>/skills/<int:skill_id>/remove/',
+        views.remove_skill,
+        name='remove_skill',
+    ),
     path('login/', views.login_view, name='login'),
     path('logout/', views.logout_view, name='logout'),
     path('register/', views.register, name='register'),

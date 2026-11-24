@@ -23,10 +23,14 @@ def project_list(request):
 
 def project_detail(request, project_id):
     project = get_object_or_404(
-        Project.objects.select_related('owner').prefetch_related('participants'),
+        Project.objects.select_related('owner').prefetch_related(
+            'participants'
+        ),
         pk=project_id,
     )
-    return render(request, 'projects/project-details.html', {'project': project})
+    return render(
+        request, 'projects/project-details.html', {'project': project}
+    )
 
 
 @login_required(login_url='users:login')
@@ -39,7 +43,9 @@ def create_project(request):
         project.participants.add(request.user)
         return redirect('projects:project_detail', project_id=project.pk)
     return render(
-        request, 'projects/create-project.html', {'form': form, 'is_edit': False},
+        request,
+        'projects/create-project.html',
+        {'form': form, 'is_edit': False},
     )
 
 
@@ -56,7 +62,9 @@ def edit_project(request, project_id):
         form.save()
         return redirect('projects:project_detail', project_id=project.pk)
     return render(
-        request, 'projects/create-project.html', {'form': form, 'is_edit': True},
+        request,
+        'projects/create-project.html',
+        {'form': form, 'is_edit': True},
     )
 
 
@@ -75,18 +83,26 @@ def complete_project(request, project_id):
 @require_POST
 def toggle_participate(request, project_id):
     if not request.user.is_authenticated:
-        return JsonResponse({'error': 'Для участия необходимо войти в аккаунт.'}, status=403)
+        return JsonResponse(
+            {'error': 'Для участия необходимо войти в аккаунт.'}, status=403
+        )
     try:
         project = get_object_or_404(Project, pk=project_id)
     except Http404:
         return JsonResponse({'error': 'Проект не найден.'}, status=404)
     if request.user.pk == project.owner_id:
-        return JsonResponse({'error': 'Автор не может отказаться от участия в своём проекте.'}, status=403)
+        return JsonResponse(
+            {'error': 'Автор не может отказаться от участия в своём проекте.'},
+            status=403,
+        )
     participating = project.participants.filter(pk=request.user.pk).exists()
     if participating:
         project.participants.remove(request.user)
     else:
         if project.status != 'open':
-            return JsonResponse({'error': 'Нельзя присоединиться к завершённому проекту.'}, status=400)
+            return JsonResponse(
+                {'error': 'Нельзя присоединиться к завершённому проекту.'},
+                status=400,
+            )
         project.participants.add(request.user)
     return JsonResponse({'status': 'ok', 'participating': not participating})
