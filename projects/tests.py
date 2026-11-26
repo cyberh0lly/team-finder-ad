@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.test import Client, TestCase
@@ -875,3 +876,68 @@ class ProjectWorkflowTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
         self.assertFalse(Project.objects.exists())
+
+
+class ProjectAdminTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        User = get_user_model()
+        cls.admin = User.objects.create_superuser(
+            email='project-admin@example.com', name='Admin', surname='User',
+            avatar='avatars/admin.png',
+        )
+        cls.member = User.objects.create_user(
+            email='admin-member@example.com', name='Member', surname='User',
+            avatar='avatars/member.png',
+        )
+        cls.staff = User.objects.create_user(
+            email='project-staff@example.com', name='Staff', surname='User',
+            avatar='avatars/staff.png', is_staff=True,
+        )
+        cls.project = Project.objects.create(name='Project', owner=cls.admin)
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+
+    def test_project_registered_and_accessible(self):
+        self.assertTrue(admin.site.is_registered(Project))
+        for action, args in (
+            ('changelist', []), ('add', []),
+            ('change', [self.project.pk]), ('delete', [self.project.pk]),
+        ):
+            url = reverse(f'admin:projects_project_{action}', args=args)
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 200)
+
+    def test_creation_includes_owner_and_selected_participants(self):
+        response = self.client.post(reverse('admin:projects_project_add'), {
+            'name': 'New project', 'owner': self.admin.pk, 'status': 'open',
+            'participants': [self.member.pk],
+        })
+        self.assertEqual(response.status_code, 302)
+        project = Project.objects.get(name='New project')
+        self.assertCountEqual(project.participants.all(), [self.admin, self.member])
+
+    def test_editing_owner_status_and_participants(self):
+        self.project.participants.add(self.admin)
+        response = self.client.post(
+            reverse('admin:projects_project_change', args=[self.project.pk]),
+            {'name': 'Changed', 'owner': self.member.pk, 'status': 'closed'},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.name, 'Changed')
+        self.assertEqual(self.project.status, 'closed')
+        self.assertEqual(self.project.owner, self.member)
+        self.assertQuerySetEqual(self.project.participants.all(), [self.member])
+
+    def test_staff_without_permissions_cannot_manage_projects(self):
+        self.client.force_login(self.staff)
+        for action, args in (
+            ('changelist', []), ('add', []),
+            ('change', [self.project.pk]), ('delete', [self.project.pk]),
+        ):
+            url = reverse(f'admin:projects_project_{action}', args=args)
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 403)
+                self.assertEqual(self.client.post(url, {}).status_code, 403)

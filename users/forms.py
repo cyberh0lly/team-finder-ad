@@ -3,9 +3,21 @@ from urllib.parse import urlsplit
 
 from django import forms
 from django.contrib.auth import authenticate
-from django.contrib.auth.forms import UserCreationForm
+from django.contrib.auth.forms import UserChangeForm, UserCreationForm
 
 from .models import User
+
+
+class AdminUserCreationForm(UserCreationForm):
+    class Meta(UserCreationForm.Meta):
+        model = User
+        fields = ('email', 'name', 'surname')
+
+
+class AdminUserChangeForm(UserChangeForm):
+    class Meta(UserChangeForm.Meta):
+        model = User
+        fields = '__all__'
 
 
 class UserRegistrationForm(UserCreationForm):

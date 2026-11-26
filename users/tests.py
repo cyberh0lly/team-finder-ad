@@ -2,7 +2,9 @@ from io import BytesIO
 from tempfile import TemporaryDirectory
 from urllib.parse import urlencode
 
+from django.contrib import admin
 from django.contrib.auth.forms import PasswordChangeForm
+from django.contrib.auth.models import Group, Permission
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
@@ -893,3 +895,151 @@ class UserWorkflowTests(TestCase):
             reverse('users:remove_skill', args=[self.user.pk, 999999])
         )
         self.assertEqual(response.status_code, 404)
+
+
+class UserAdminTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create_superuser(
+            email='admin@example.com', password='Admin-test-672!',
+            name='Admin', surname='User', avatar='avatars/admin.png',
+        )
+        cls.user = User.objects.create_user(
+            email='member@example.com', password='Member-test-672!',
+            name='Member', surname='User', avatar='avatars/member.png',
+        )
+        cls.staff = User.objects.create_user(
+            email='staff@example.com', is_staff=True,
+            name='Staff', surname='User', avatar='avatars/staff.png',
+        )
+        cls.skill = Skill.objects.create(name='Python')
+
+    def setUp(self):
+        media = TemporaryDirectory()
+        self.addCleanup(media.cleanup)
+        settings = override_settings(MEDIA_ROOT=media.name)
+        settings.enable()
+        self.addCleanup(settings.disable)
+        self.client.force_login(self.admin)
+
+    def test_models_registered(self):
+        self.assertTrue(admin.site.is_registered(User))
+        self.assertTrue(admin.site.is_registered(Skill))
+
+    def test_guest_and_regular_user_cannot_access_admin(self):
+        url = reverse('admin:index')
+        self.client.logout()
+        self.assertRedirects(
+            self.client.get(url), f'{reverse("admin:login")}?next={url}',
+        )
+        self.client.force_login(self.user)
+        self.assertRedirects(
+            self.client.get(url), f'{reverse("admin:login")}?next={url}',
+        )
+
+    def test_superuser_can_open_user_and_skill_pages(self):
+        for url in (
+            reverse('admin:users_user_changelist'),
+            reverse('admin:users_user_add'),
+            reverse('admin:users_user_change', args=[self.user.pk]),
+            reverse('admin:users_skill_changelist'),
+            reverse('admin:users_skill_add'),
+            reverse('admin:users_skill_change', args=[self.skill.pk]),
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 200)
+
+    def test_creating_user_hashes_password(self):
+        password = 'New-member-672!'
+        response = self.client.post(reverse('admin:users_user_add'), {
+            'email': 'new@example.com', 'name': 'New', 'surname': 'User',
+            'password1': password, 'password2': password,
+        })
+        self.assertEqual(response.status_code, 302)
+        user = User.objects.get(email='new@example.com')
+        self.assertNotEqual(user.password, password)
+        self.assertTrue(user.check_password(password))
+
+    def test_admin_login_uses_email(self):
+        self.client.logout()
+        response = self.client.post(reverse('admin:login'), {
+            'username': self.admin.email,
+            'password': 'Admin-test-672!',
+            'next': reverse('admin:index'),
+        })
+        self.assertRedirects(response, reverse('admin:index'))
+
+    def test_admin_can_update_user_permissions(self):
+        group = Group.objects.create(name='Project editors')
+        permission = Permission.objects.get(
+            content_type__app_label='projects', codename='change_project',
+        )
+        response = self.client.post(
+            reverse('admin:users_user_change', args=[self.user.pk]),
+            {
+                'email': self.user.email, 'name': self.user.name,
+                'surname': self.user.surname,
+                'is_staff': 'on', 'is_superuser': 'on',
+                'groups': [group.pk], 'user_permissions': [permission.pk],
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.is_active)
+        self.assertTrue(self.user.is_staff)
+        self.assertTrue(self.user.is_superuser)
+        self.assertQuerySetEqual(self.user.groups.all(), [group])
+        self.assertQuerySetEqual(self.user.user_permissions.all(), [permission])
+
+    def test_password_confirmation_required(self):
+        response = self.client.post(reverse('admin:users_user_add'), {
+            'email': 'new@example.com', 'name': 'New', 'surname': 'User',
+            'password1': 'New-member-672!', 'password2': 'Different-672!',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('password2', response.context['adminform'].form.errors)
+        self.assertFalse(User.objects.filter(email='new@example.com').exists())
+
+    def test_admin_can_change_password(self):
+        password = 'Changed-member-672!'
+        url = reverse('admin:auth_user_password_change', args=[self.user.pk])
+        self.assertEqual(self.client.get(url).status_code, 200)
+        response = self.client.post(url, {
+            'password1': password, 'password2': password,
+            'usable_password': 'true',
+        })
+        self.assertEqual(response.status_code, 302)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(password))
+        self.assertFalse(self.user.check_password('Member-test-672!'))
+
+    def test_editing_profile_preserves_password_and_saves_skills(self):
+        password_hash = self.user.password
+        response = self.client.post(
+            reverse('admin:users_user_change', args=[self.user.pk]),
+            {
+                'email': self.user.email, 'name': 'Changed', 'surname': 'User',
+                'is_active': 'on', 'skills': [self.skill.pk],
+                'password': 'must-not-replace-password',
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.name, 'Changed')
+        self.assertEqual(self.user.password, password_hash)
+        self.assertTrue(self.user.check_password('Member-test-672!'))
+        self.assertQuerySetEqual(self.user.skills.all(), [self.skill])
+
+    def test_staff_without_permissions_cannot_manage_users_or_skills(self):
+        self.client.force_login(self.staff)
+        for model, obj in (('user', self.user), ('skill', self.skill)):
+            for action, args in (
+                ('changelist', []), ('add', []),
+                ('change', [obj.pk]), ('delete', [obj.pk]),
+            ):
+                url = reverse(f'admin:users_{model}_{action}', args=args)
+                with self.subTest(url=url):
+                    self.assertEqual(self.client.get(url).status_code, 403)
+                    self.assertEqual(self.client.post(url, {}).status_code, 403)
+        url = reverse('admin:auth_user_password_change', args=[self.user.pk])
+        self.assertEqual(self.client.post(url, {}).status_code, 403)
