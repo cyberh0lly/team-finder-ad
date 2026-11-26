@@ -69,6 +69,24 @@ class UserDetailTests(TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
+    def test_profile_shows_owned_projects_newest_first(self):
+        older = Project.objects.create(name='Первый проект', owner=self.user)
+        newer = Project.objects.create(
+            name='Новый проект', owner=self.user, status='closed', description='Описание проекта',
+        )
+        newer.participants.add(self.user, self.other_user)
+        foreign = Project.objects.create(name='Чужой проект', owner=self.other_user)
+        foreign.participants.add(self.user)
+        response = self.client.get(self.url)
+        self.assertEqual(list(response.context['projects']), [newer, older])
+        for project in (older, newer):
+            self.assertContains(response, project.name)
+            self.assertContains(response, reverse('projects:project_detail', args=[project.pk]))
+        self.assertContains(response, 'Описание проекта')
+        self.assertContains(response, 'Закрыт')
+        self.assertNotContains(response, foreign.name)
+        self.assertNotContains(response, 'Пока нет проектов')
+
     def test_owner_sees_profile_actions(self):
         self.client.force_login(self.user)
         response = self.client.get(self.url)
@@ -626,14 +644,14 @@ class ParticipantListTests(TestCase):
         self.assertTemplateUsed(response, 'users/participants.html')
         self.assertQuerySetEqual(
             response.context['participants'],
-            [user.pk for user in self.members],
+            [user.pk for user in reversed(self.members)],
             transform=lambda user: user.pk,
         )
-        self.assertEqual(list(response.context['page_obj']), self.members[:12])
+        self.assertEqual(list(response.context['page_obj']), self.members[::-1][:12])
         self.assertContains(response, 'class="participant-card"', count=12)
-        self.assertContains(response, self.members[0].avatar.url)
-        self.assertContains(response, 'Участник 0 Тестовый')
-        for member in self.members[:12]:
+        self.assertContains(response, self.members[-1].avatar.url)
+        self.assertContains(response, 'Участник 24 Тестовый')
+        for member in self.members[::-1][:12]:
             self.assertContains(
                 response,
                 f'href="{reverse("users:user_detail", args=[member.pk])}"',
@@ -649,7 +667,7 @@ class ParticipantListTests(TestCase):
         self.assertEqual(response.context['page_obj'].paginator.count, 13)
         self.assertQuerySetEqual(
             response.context['participants'],
-            [user.pk for user in self.members[:13]],
+            [user.pk for user in reversed(self.members[:13])],
             transform=lambda user: user.pk,
         )
         self.assertContains(
@@ -677,9 +695,9 @@ class ParticipantListTests(TestCase):
 
     def test_pagination_and_invalid_page_numbers(self):
         for page, expected in (
-            ('1', self.members[:12]), ('2', self.members[12:24]),
-            ('3', self.members[24:]), ('bad', self.members[:12]),
-            ('999', self.members[24:]), ('0', self.members[24:]),
+            ('1', self.members[::-1][:12]), ('2', self.members[::-1][12:24]),
+            ('3', self.members[::-1][24:]), ('bad', self.members[::-1][:12]),
+            ('999', self.members[::-1][24:]), ('0', self.members[::-1][24:]),
         ):
             with self.subTest(page=page):
                 response = self.client.get(self.url, {'page': page})
@@ -696,7 +714,7 @@ class ParticipantListTests(TestCase):
                     self.url, {'skill': skill.name, 'page': 2}
                 )
                 self.assertEqual(
-                    list(response.context['page_obj']), self.members[12:13]
+                    list(response.context['page_obj']), self.members[:1]
                 )
                 self.assertContains(response, f'href="?{prefix}&amp;page=1"')
 
@@ -709,10 +727,10 @@ class ParticipantListTests(TestCase):
         self.assertNotContains(response, 'class="pagination"')
 
     def test_empty_optional_profile_fields(self):
-        User.objects.filter(pk=self.members[0].pk).update(avatar='', about='')
+        User.objects.filter(pk=self.members[-1].pk).update(avatar='', about='')
         response = self.client.get(self.url)
         self.assertContains(response, 'images/default-avatar.png')
-        self.assertContains(response, 'Участник 0 Тестовый')
+        self.assertContains(response, 'Участник 24 Тестовый')
 
 
 class UserWorkflowTests(TestCase):
@@ -726,6 +744,42 @@ class UserWorkflowTests(TestCase):
             email='workflow@example.com', password='Workflow-Secret-42!',
             name='Анна', surname='Иванова', avatar='avatars/a.png',
         )
+
+    @override_settings(DEBUG=True)
+    def test_weak_passwords_are_rejected_by_registration_and_password_change(self):
+        for password, error in (
+            ('Ab9!', 'password_too_short'),
+            ('password', 'password_too_common'),
+            ('7294836105', 'password_entirely_numeric'),
+            (self.user.email, 'password_too_similar'),
+        ):
+            with self.subTest(password=password):
+                self.client.logout()
+                registration_password = (
+                    'weak@example.com' if error == 'password_too_similar' else password
+                )
+                response = self.client.post(reverse('users:register'), {
+                    'email': 'weak@example.com', 'name': 'Тест', 'surname': 'Тестовый',
+                    'password1': registration_password, 'password2': registration_password,
+                })
+                self.assertEqual(response.status_code, 200)
+                codes = [
+                    item.code for item in response.context['form'].errors.as_data()['password2']
+                ]
+                self.assertIn(error, codes)
+                self.assertFalse(User.objects.filter(email='weak@example.com').exists())
+                self.client.force_login(self.user)
+                response = self.client.post(reverse('users:change_password'), {
+                    'old_password': 'Workflow-Secret-42!',
+                    'new_password1': password, 'new_password2': password,
+                })
+                self.assertEqual(response.status_code, 200)
+                codes = [
+                    item.code for item in response.context['form'].errors.as_data()['new_password2']
+                ]
+                self.assertIn(error, codes)
+                self.user.refresh_from_db()
+                self.assertTrue(self.user.check_password('Workflow-Secret-42!'))
 
     def test_registration_login_and_profile_edit(self):
         response = self.client.post(
@@ -746,6 +800,7 @@ class UserWorkflowTests(TestCase):
         self.assertFalse(user.is_superuser)
         self.assertNotIn('_auth_user_id', self.client.session)
         self.assertTrue(user.avatar.storage.exists(user.avatar.name))
+        self.assertTrue(user.check_password('Registration-Secret-42!'))
         response = self.client.post(reverse('users:login'), {
             'email': user.email, 'password': 'Registration-Secret-42!',
         })

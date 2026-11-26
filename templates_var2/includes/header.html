@@ -4,14 +4,14 @@
 <header class="site-header">
     <div class="container">
         <div class="header-content">
-            <a href="/projects/list" class="logo-link">TeamFinder</a>
+            <a href="{% url 'projects:project_list' %}" class="logo-link">TeamFinder</a>
 
             <nav class="main-nav">
-                <a href="/projects/list" class="nav-link">
+                <a href="{% url 'projects:project_list' %}" class="nav-link">
                     {% include 'includes/svg/home.html' %}
                     <p>Главная</p>
                 </a>
-                <a href="/users/list" class="nav-link">
+                <a href="{% url 'users:user_list' %}" class="nav-link">
                     {% include 'includes/svg/participants.html' %}
                     <p>Участники</p>
                 </a>
@@ -32,11 +32,11 @@
                     <span class="username">{{ request.user.name }} {{ request.user.surname }}</span>
                 </a>
                 {% else %}
-                <button class="button button-login nav-link" onclick="window.location.href='/users/login/'">
+                <button class="button button-login nav-link" onclick="window.location.href='{% url 'users:login' %}'">
                     {% include 'includes/svg/login.html' %}
                     <p>Войти</p>
                 </button>
-                <button class="button button-register nav-link black" onclick="window.location.href='/users/register/'">
+                <button class="button button-register nav-link black" onclick="window.location.href='{% url 'users:register' %}'">
                     {% include 'includes/svg/register.html' %}
                     <p>Регистрация</p>
                 </button>
@@ -45,14 +45,15 @@
         </div>
     </div>
 </header>
+{% if request.user.is_authenticated %}
 <div id="userSidebar" class="user-sidebar">
     <div class="sidebar-content">
-        <a href="/users/{{ request.user.id }}/"><span>{% include 'includes/svg/profile.html' %} Мой профиль</span></a>
+        <a href="{% url 'users:user_detail' request.user.id %}"><span>{% include 'includes/svg/profile.html' %} Мой профиль</span></a>
         <a href="{% url 'users:edit_profile' %}"><span>{% include 'includes/svg/settings.html' %} Редактировать профиль</span></a>
         <a href="{% url 'users:change_password' %}"><span>{% include 'includes/svg/lock.html' %} Сменить пароль</span></a>
         <a href="#"
            class="share-button"
-           data-url="/users/{{ request.user.id }}">
+           data-url="{% url 'users:user_detail' request.user.id %}">
             {% include 'includes/svg/share.html' %} Поделиться профилем
         </a>
         <hr class="sidebar-divider">
@@ -67,3 +68,4 @@
 </form>
     </div>
 </div>
+{% endif %}

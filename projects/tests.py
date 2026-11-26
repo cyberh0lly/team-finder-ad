@@ -121,6 +121,25 @@ class ProjectListTests(TestCase):
         self.client.force_login(self.owner)
         self.assertEqual(self.client.get(self.url).status_code, 200)
 
+    def test_create_button_and_sidebar_only_shown_to_authenticated_users(self):
+        for empty in (False, True):
+            with self.subTest(empty=empty):
+                if empty:
+                    Project.objects.all().delete()
+                self.client.logout()
+                response = self.client.get(self.url)
+                self.assertNotContains(response, reverse('projects:create_project'))
+                self.assertNotContains(response, 'id="userSidebar"')
+                self.assertNotContains(response, '/users/None')
+                self.assertContains(response, f'href="{reverse("users:user_list")}"')
+                self.client.force_login(self.owner)
+                response = self.client.get(self.url)
+                self.assertContains(response, reverse('projects:create_project'))
+                self.assertContains(response, 'id="userSidebar"')
+                self.assertContains(
+                    response, f'data-url="{reverse("users:user_detail", args=[self.owner.pk])}"',
+                )
+
     def test_last_page_and_invalid_page_numbers(self):
         for page, expected in (
             ('2', self.projects[12:]), ('bad', self.projects[:12]),

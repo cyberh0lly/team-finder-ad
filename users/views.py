@@ -18,7 +18,7 @@ from .models import Skill, User
 
 def user_list(request):
     active_skill = request.GET.get('skill', '')
-    participants = User.objects.order_by('id')
+    participants = User.objects.order_by('-id')
     if active_skill:
         participants = participants.filter(
             skills__name=active_skill
@@ -38,10 +38,11 @@ def user_list(request):
 
 def user_detail(request, user_id):
     user = get_object_or_404(User, id=user_id)
+    projects = user.owned_projects.prefetch_related('participants').order_by('-created_at', '-id')
     return render(
         request,
         'users/user-details.html',
-        {'user': user},
+        {'user': user, 'projects': projects},
     )
 
 
