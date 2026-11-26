@@ -1,5 +1,7 @@
-from io import BytesIO
+import os
+from io import BytesIO, StringIO
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 from urllib.parse import urlencode
 
 from django.contrib import admin
@@ -7,12 +9,17 @@ from django.contrib.auth.forms import PasswordChangeForm
 from django.contrib.auth.models import Group, Permission
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import IntegrityError, transaction
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from PIL import Image
 
+from projects.models import Project
+
 from .forms import UserProfileForm
+from .management.commands.seed_data import DEMO_USERS
 from .models import Skill, User
 
 
@@ -1043,3 +1050,111 @@ class UserAdminTests(TestCase):
                     self.assertEqual(self.client.post(url, {}).status_code, 403)
         url = reverse('admin:auth_user_password_change', args=[self.user.pk])
         self.assertEqual(self.client.post(url, {}).status_code, 403)
+
+
+class SeedDataTests(TestCase):
+    def setUp(self):
+        media = TemporaryDirectory()
+        self.addCleanup(media.cleanup)
+        settings = override_settings(MEDIA_ROOT=media.name)
+        settings.enable()
+        self.addCleanup(settings.disable)
+        environment = patch.dict(os.environ, {'DEMO_PASSWORD': 'Demo-test-839!'})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.output = StringIO()
+
+    def test_creates_users_skills_projects_and_participants(self):
+        call_command('seed_data', stdout=self.output)
+        self.assertEqual(User.objects.count(), 5)
+        self.assertEqual(Project.objects.count(), 5)
+        self.assertSetEqual(set(Skill.objects.values_list('name', flat=True)), {
+            'Python', 'Django', 'PostgreSQL', 'HTML', 'CSS',
+            'JavaScript', 'Git', 'Docker', 'Figma', 'SQL',
+        })
+        self.assertEqual(Project.objects.filter(status='open').count(), 3)
+        self.assertEqual(Project.objects.filter(status='closed').count(), 2)
+        for data in DEMO_USERS:
+            with self.subTest(email=data['email']):
+                user = User.objects.get(email=data['email'])
+                self.assertEqual(user.name, data['name'])
+                self.assertEqual(user.surname, data['surname'])
+                self.assertTrue(user.about)
+                self.assertTrue(user.is_active)
+                self.assertFalse(user.is_staff)
+                self.assertFalse(user.is_superuser)
+                self.assertTrue(user.check_password('Demo-test-839!'))
+                self.assertNotEqual(user.password, 'Demo-test-839!')
+                self.assertTrue(user.avatar.storage.exists(user.avatar.name))
+                self.assertFalse(user.phone)
+                self.assertFalse(user.github_url)
+                self.assertSetEqual(
+                    set(user.skills.values_list('name', flat=True)), set(data['skills']),
+                )
+                project = user.owned_projects.get(name=data['project'])
+                self.assertTrue(project.description)
+                self.assertTrue(project.participants.filter(pk=user.pk).exists())
+                self.assertTrue(project.participants.filter(email=data['participant']).exists())
+                self.assertLess(project.participants.count(), User.objects.count())
+        output = self.output.getvalue()
+        self.assertIn('пользователей: 5, навыков: 10, проектов: 5', output)
+        self.assertNotIn('Demo-test-839!', output)
+
+    def test_repeat_preserves_data_passwords_and_relationships(self):
+        call_command('seed_data', stdout=self.output)
+        user = User.objects.get(email='anna@example.com')
+        user.name = 'Изменённое имя'
+        user.set_password('Changed-test-839!')
+        user.save()
+        skill = Skill.objects.create(name='Testing')
+        user.skills.add(skill)
+        project = user.owned_projects.get()
+        project.status = 'closed'
+        project.description = 'Изменённое описание'
+        project.save()
+        project.participants.remove(User.objects.get(email='maxim@example.com'))
+        users = list(User.objects.order_by('pk').values())
+        projects = list(Project.objects.order_by('pk').values())
+        skills = list(User.skills.through.objects.order_by('pk').values())
+        participants = list(Project.participants.through.objects.order_by('pk').values())
+        with patch.dict(os.environ, {'DEMO_PASSWORD': 'Another-test-839!'}):
+            call_command('seed_data', stdout=self.output)
+        self.assertEqual(list(User.objects.order_by('pk').values()), users)
+        self.assertEqual(list(Project.objects.order_by('pk').values()), projects)
+        self.assertEqual(list(User.skills.through.objects.order_by('pk').values()), skills)
+        self.assertEqual(
+            list(Project.participants.through.objects.order_by('pk').values()), participants,
+        )
+        self.assertEqual(Skill.objects.count(), 11)
+        user.refresh_from_db()
+        self.assertTrue(user.check_password('Changed-test-839!'))
+        self.assertIn('пользователей: 0, навыков: 0, проектов: 0', self.output.getvalue())
+
+    def test_occupied_email_and_unrelated_data_are_preserved(self):
+        user = User.objects.create_user(
+            email='ANNA@example.com', name='Другой', surname='Пользователь',
+            password='Existing-test-839!', avatar='avatars/existing.png',
+        )
+        skill = Skill.objects.create(name='Python')
+        user.skills.add(skill)
+        project = Project.objects.create(name='Личный проект', owner=user)
+        project.participants.add(user)
+        password_hash = user.password
+        call_command('seed_data', stdout=self.output)
+        user.refresh_from_db()
+        self.assertEqual(User.objects.count(), 5)
+        self.assertEqual(Skill.objects.count(), 10)
+        self.assertEqual(user.name, 'Другой')
+        self.assertEqual(user.password, password_hash)
+        self.assertQuerySetEqual(user.skills.all(), [skill])
+        self.assertQuerySetEqual(user.owned_projects.all(), [project])
+        self.assertQuerySetEqual(user.participated_projects.all(), [project])
+        self.assertIn('Email anna@example.com уже занят', self.output.getvalue())
+
+    def test_missing_password_does_not_create_records(self):
+        with patch.dict(os.environ, {'DEMO_PASSWORD': ''}):
+            with self.assertRaisesMessage(CommandError, 'DEMO_PASSWORD'):
+                call_command('seed_data', stdout=self.output)
+        self.assertFalse(User.objects.exists())
+        self.assertFalse(Skill.objects.exists())
+        self.assertFalse(Project.objects.exists())
